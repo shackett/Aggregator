@@ -338,116 +338,78 @@ precision_estimates[!is.na(dispersion_table$log_dispersion_SD),] <- precision_es
 
 
 
+###### Estimate protein abundance by EM ######
 
+## combine charge states
 
+abund_point_estimates <- point_estimates[dispersion_table$nvals >= n_e*quality_frac,]
+abund_precision_estimates <- precision_estimates[dispersion_table$nvals >= n_e*quality_frac,]
+abund_point_estimates[is.na(abund_point_estimates)] <- 0
 
+abund_peptides <- data.frame(t(sapply(rownames(abund_point_estimates), function(x){strsplit(x, '\\.')[[1]]})))
+colnames(abund_peptides) <- c("peptide", "charge")
 
+chargeStateCollapse <- matrix(0, ncol = length(unique(abund_peptides$peptide)), nrow = nrow(abund_peptides))
+rownames(chargeStateCollapse) <- rownames(abund_peptides); colnames(chargeStateCollapse) <- unique(abund_peptides$peptide)
 
-
-
-
-
-#### fit peak dependent variance(IC) and peptide-specific dispersion
-
-n_c <- length(bioConds[i,])
-
-point_estimates <- matrix(NA, ncol = n_c, nrow = n_p); rownames(point_estimates) <- rownames(bioConds); colnames(point_estimates) <- colnames(bioConds)
-precision_estimates <- point_estimates
-dispersion_adj <- rep(NA, n_p)
-ks_p_lognormOD <- rep(NA, n_p)
-shrinkage_lambda_val <- seq(0, 1, by = 0.05) #a shrinkage value (lambda) between 0 and 1 governing the fraction of by which the over-dispersion parameter will be shrunk towards 1.
-shrinkage_pep_se <- NULL 
-shrinkage_pep_table <- NULL
-
-full_rdf <- sum((rep(1, length(bio_pool[,1]))  %*% bio_pool) - 1)
-K_fold_CV_K <- 5
-
-
-for(a_pep_n in 1:n_p){
-  #reduced data
-  
-  presentVals <- bioConds[a_pep_n,][!is.na(bioConds[a_pep_n,])]
-  presentCovar <- bio_pool[!is.na(bioConds[a_pep_n,]),]
-  representedSegs <- colSums(presentCovar) >= 2
-  presentCovar <- presentCovar[,representedSegs]
-  presentVals <- presentVals[rowSums(presentCovar) == 1]
-  presentCovar <- presentCovar[rowSums(presentCovar) == 1,]  
-    
-  #only take one residual per line because these will be symmetrical - resulting in a violation of exchangability
-  chosenResid <- apply(presentCovar, 2, function(firstEnt){
-      c(1:length(firstEnt))[firstEnt == 1][1]
-      })
-  
-  
-  RSS <- t((presentVals - presentCovar %*% t((presentVals %*% presentCovar)/rep(1, length(presentCovar[,1]))  %*% presentCovar))^2)
-  var_correction <- unlist(((rep(1, length(presentCovar[,1]))  %*% presentCovar)/((rep(1, length(presentCovar[,1]))  %*% presentCovar) - 1)) %*% t(presentCovar))
-  peptide_prec <- (1/predict(var_spline, avgRepIC[a_pep_n,representedSegs])$y) %*% t(presentCovar)
-  
-  dispersion <- length(presentCovar[,1]) / sum(RSS * var_correction * peptide_prec)
-  dispersion_adj[a_pep_n] <- dispersion
-  #ks_p_lognormOD[a_pep_n] <- ks.test(pnorm(presentVals[chosenResid] - t((presentVals %*% presentCovar)/rep(1, length(presentCovar[,1]))  %*% presentCovar), 0, sqrt(1/(peptide_prec[chosenResid]*dispersion))), punif)$p
-  
-  studentized_resid <- as.vector((presentVals[chosenResid] - t((presentVals %*% presentCovar)/rep(1, length(presentCovar[,1]))  %*% presentCovar))/sqrt(1/(peptide_prec[chosenResid]*dispersion)))
-  ks_p_lognormOD[a_pep_n] <- ks.test(studentized_resid/sd(studentized_resid), pnorm)$p
-
-
-  red_rdf <- sum((rep(1, length(presentCovar[,1]))  %*% presentCovar) - 1) # residual degrees of freedom for peptide i
-  
-  #shrink_frac <- (red_rdf/full_rdf)*shrinkage_lambda_val # shrinkage of empirical over-dispersion towards 1
-  shrink_frac <- shrinkage_lambda_val
-  
-  if(K_fold_CV_K < length(presentCovar[1,])){
-    K_remaining_indices <- rep(c(1:K_fold_CV_K), times = floor(length(presentCovar[1,])/K_fold_CV_K))
-    if(length(presentCovar[1,]) %% K_fold_CV_K != 0){
-      K_remaining_indices <- c(K_remaining_indices, c(1:K_fold_CV_K)[1:(length(presentCovar[1,]) %% K_fold_CV_K)])
-      }
-    scrambled_cv_indices <- sample(K_remaining_indices)
-    
-    lk_density <- matrix(NA, ncol = K_fold_CV_K, nrow = length(shrinkage_lambda_val))
-    
-    for(k in 1:K_fold_CV_K){
-      dispersion_cv <- sum(presentCovar[,scrambled_cv_indices != k]) / sum((RSS * var_correction * peptide_prec)[,scrambled_cv_indices != k]) #calculate dispersion after leaving out (1/k fraction of segregants)
-      
-      densVec <- rep(NA, length(shrinkage_lambda_val))
-      for(l in 1:length(shrinkage_lambda_val)){
-        pred_density <- dnorm(presentVals[chosenResid[scrambled_cv_indices != k]] - t((presentVals %*% presentCovar)/rep(1, length(presentCovar[,1]))  %*% presentCovar)[scrambled_cv_indices != k], 0, sqrt(1/(peptide_prec*((shrink_frac[l] * dispersion_cv) + (1 - shrink_frac[l]))))[chosenResid[scrambled_cv_indices != k]], log = TRUE)
-        average_density <- sum(pred_density)/length(pred_density)
-        lk_density[l,k] <- average_density
-      }
-    }
-    
-    shrinkage_pep_se <- rbind(shrinkage_pep_se, data.frame(dispersion_mle = dispersion, shrink_frac = shrink_frac, sample_frac = red_rdf/full_rdf, likelihood = apply(lk_density, 1, mean)))
-    shrinkage_pep_table <- rbind(shrinkage_pep_table, data.frame(dispersion_mle = dispersion, shrinkage_cv_max = shrinkage_lambda_val[which.max(apply(lk_density, 1, mean))], sample_frac = red_rdf/full_rdf))
-    
-    }
+row_col_match <- chmatch(abund_peptides$peptide, colnames(chargeStateCollapse))
+for(i in 1:nrow(chargeStateCollapse)){
+  chargeStateCollapse[i, row_col_match[i]] <- 1
   }
 
-shrink_frac_df <- data.frame(lb = seq(0, 0.9, 0.1), ub = seq(0.1, 1, 0.1))
-shrink_frac_df$label <- apply(shrink_frac_df, 1, function(x){paste(paste(c(unlist(x)*100), collapse = "-"), "%", sep = "")})
+abund_point_estimates <- t(abund_point_estimates)
+abund_precision_estimates <- t(abund_precision_estimates)
 
-shrinkage_pep_se$sample_frac_bin <- sapply(shrinkage_pep_se$sample_frac, function(x){
-  shrink_frac_df$label[c(1:length(shrink_frac_df[,1]))[x <= shrink_frac_df$ub][1]]
-  })
+uniquePepMean <- as.matrix(((abund_point_estimates * abund_precision_estimates) %*% chargeStateCollapse)/abund_precision_estimates %*% chargeStateCollapse)
+uniquePepPrecision <- abund_precision_estimates %*% chargeStateCollapse
+uniquePepMean[is.nan(uniquePepMean)] <- 0
 
-shrinkage_plot <- ggplot(shrinkage_pep_se, aes(x = log2(dispersion_mle))) + facet_wrap(~ sample_frac_bin, ncol = 5, scales = "free_y")
-shrinkage_plot + geom_bar() + geom_vline(xintercept = 0, col = "RED", size = 2) + ggtitle("Overdispersion parameters versus fraction of missing data")
+## reduce peptide - protein mapping to ascetained peptides and possible proteins and align with abundance colnames
+mappingMat <- 1*t(ProtPepMatrix) #trans and convert from boolean to binary
 
-###
-shrinkage_plot <- ggplot(shrinkage_pep_se, aes(x = shrink_frac, y = likelihood)) + facet_wrap(~ sample_frac_bin, ncol = 5, scales = "free_x")
-shrinkage_plot + geom_hex() + ggtitle("Overdispersion parameters versus fraction of missing data")
+#combine degenerate proteins together if all the peptides associated with multiple proteins are shared
 
-###
-shrinkage_pep_table$sample_frac_bin <- sapply(shrinkage_pep_table$sample_frac, function(x){
-  shrink_frac_df$label[c(1:length(shrink_frac_df[,1]))[x <= shrink_frac_df$ub][1]]
-  })
-shrinkage_plot <- ggplot(shrinkage_pep_table, aes(x = shrinkage_cv_max)) + facet_wrap(~ sample_frac_bin, ncol = 5, scales = "free_x")
-shrinkage_plot + geom_bar() + ggtitle("Overdispersion parameters versus fraction of missing data")
+degen_prots <- apply(mappingMat, 2, function(prot){
+  paste(prot, collapse = "")
+	})
 
-shrinkage_pep_table_save <- shrinkage_pep_table
-library(qvalue)
-plot(qvalue(ks_p_lognormOD))
+degen_prot_patterns <- names(table(degen_prots))[unname(table(degen_prots)) > 1]
 
-  
+degen_prot_matches <- list()
+degen_mappings <- NULL
+for(pat in 1:length(degen_prot_patterns)){
+	
+	degen_prot_matches[[paste(colnames(mappingMat)[degen_prots %in% degen_prot_patterns[pat]], collapse = "/")]] <- colnames(mappingMat)[degen_prots %in% degen_prot_patterns[pat]]
+	degen_mappings <- cbind(degen_mappings, mappingMat[,degen_prots %in% degen_prot_patterns[pat]][,1])
+	
+	}
+colnames(degen_mappings) <- names(degen_prot_matches)	
+
+unique_mappingMat <- cbind(mappingMat[,!(degen_prots %in% degen_prot_patterns)], degen_mappings)	
+
+
+
+## combine proteins with identical peptides into a single set
+
+
+unique_mappingMat <- unique_mappingMat[chmatch(colnames(uniquePepMean), rownames(unique_mappingMat)),]
+unique_mappingMat <- unique_mappingMat[,colSums(unique_mappingMat) != 0]
+
+## remove peptide with no protein matches
+uniquePepMean <- uniquePepMean[,rowSums(unique_mappingMat) != 0]
+uniquePepPrecision <- uniquePepPrecision[,rowSums(unique_mappingMat) != 0]
+unique_mappingMat <- unique_mappingMat[rowSums(unique_mappingMat) != 0,]
+
+n_p <- nrow(unique_mappingMat)
+n_prot <- ncol(unique_mappingMat)
+
+## run EM
+
+save(uniquePepMean, uniquePepPrecision, unique_mappingMat, n_p, n_prot, n_c, file = "EMimport.Rdata")
+
+
+
+#### Fit quasipoisson too ###
   
 #look at distriubution of residuals fitting abundance ~ segregant to determine an appropriate parametric form for the likelihood #####
 
