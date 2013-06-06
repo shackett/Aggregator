@@ -2,7 +2,26 @@ setwd("~/Desktop/Rabinowitz/Aggregator")
 library(ggplot2)
 library(gplots); library(colorRamps)
 library(reshape2)
+library(data.table)
 
+####### Functions ########
+
+CV_dispersions <- function(repeated_conds, nCV = 5, nreps = 100){
+    ### peform K-fold cross-validation to determine how stable over-dispersion parameter estimation is.
+    ### When the sd of an OD value is approximately known, shrinkage can be employed
+      
+    sd(log2(c(sapply(1:nreps, function(z){
+    cond_subset <- unique(repeated_conds$segregant)
+    cond_indeces <- c(rep(1:nCV, times = floor(length(cond_subset)/nCV)), (0:(length(cond_subset) %% nCV))[-1])
+    cond_subset <- data.table(cond_subset, sample_set = sample(cond_indeces))
+    
+    sapply(1:nCV, function(n){
+      red_set <- repeated_conds[repeated_conds$segregant %in% cond_subset$cond_subset[cond_subset$sample_set != n],]
+      mean(red_set[, (RA - fitted)^2 * nreps/(nreps - 1) * (1/var_fit),])
+      })}))))
+
+
+    }
 
 #### Construct experimental design from header ####
 
@@ -44,6 +63,10 @@ load("Foss2007/20130602Foss2007ProtPepMatrices.Rdata")
 
 condMat <- condMat[chmatch(colnames(PepChargeMatrix), condMat$runNum),]
 colnames(PepChargeMatrix) <- condMat$newName
+condMat <- data.table(condMat)
+condMat[,bioRep := paste(segregant, bioR, sep = '-'), by = newName]
+
+### normalize columns - using same method as for metabolomics
 
 row.median <- apply(PepChargeMatrix, 1, median, na.rm = TRUE)
 scaling.factors <- rep(NA, ncol(PepChargeMatrix))
@@ -55,6 +78,10 @@ qplot(log2(scaling.factors))
 fossMat_norm <- t(t(PepChargeMatrix) * scaling.factors)
 lfossMat_norm <- log2(fossMat_norm)
 
+
+
+### generate a pearson correlation matrix
+
 sampleCorr <- cor(lfossMat_norm, use = "pairwise.complete.obs")
 pdf(file = "Figures/allRepCorr.pdf", width = 16, height = 16)
 heatmap.2(sampleCorr, trace = "none", col = blue2yellow(100), symm = TRUE)
@@ -62,128 +89,263 @@ dev.off()
 
 
 
+# determine variance between pairs of biological replicates, pooling technical replicates.
 
-#### Load ZK data ####
-
-fossMat <-  read.delim("Foss2007_peptides.txt", sep = "\t")
-fossMat <- fossMat[,colnames(fossMat) %in% c("group.id", "protein.group", condIDs)]
-
-#clean up rows
-proteinDesc <- fossMat[,1:2]
-pep.vec <- rep(NA, times = length(proteinDesc[,1]))
-for(id in unique(proteinDesc$group.id)){
-  pep.vec[proteinDesc$group.id == id] <- c(1:sum(proteinDesc$group.id == id))
-  }
-proteinDesc$peptide <- pep.vec
-
-proteinDesc$name <- apply(proteinDesc, 1, function(x){paste(x[c(1,3)], collapse = "_", sep = "")})
-proteinDesc$name <- sapply(proteinDesc$name, function(x){gsub(pattern = ' ', replacement = '', x)})
-
-
-
-
-fossMat <- fossMat[,-c(1,2)]; rownames(fossMat) <- proteinDesc$name
-colnames(fossMat) <- condMat$newName; fossMat <- as.matrix(fossMat)
-
-
-#normalize columns - using same method as for metabolomics
-
-row.median <- apply(fossMat, 1, median, na.rm = TRUE)
-scaling.factors <- rep(NA, length(fossMat[1,]))
-for (j in 1:length(fossMat[1,])){
-  scaling.factors[j] <- median(row.median[!is.na(fossMat[,j])]/fossMat[,j][!is.na(fossMat[,j])])
-}
-qplot(scaling.factors)
-
-fossMat_norm <- t(t(fossMat) * scaling.factors)
-lfossMat_norm <- log2(fossMat_norm)
-
-### generate a pearson correlation matrix
-
-
-sampleCorr <- cor(lfossMat_norm, use = "pairwise.complete.obs")
-pdf(file = "Figures/allRepCorr.pdf", width = 16, height = 16)
-heatmap.2(sampleCorr, trace = "none", col = blue2yellow(1000), symm = TRUE)
-dev.off()
-
-## for each peak find SN
-## 
-
-
-
-
-
-
-
-#determine variance between pairs of biological replicates, pooling technical replicates.
-
-n_c <- length(lfossMat_norm[1,])
-n_p <- length(lfossMat_norm[,1])
+n_c <- ncol(lfossMat_norm)
+n_p <- nrow(lfossMat_norm)
 
 
 #pool tech replicates
-tech_pool <- matrix(0, nrow = length(condMat[,1]), ncol = length(condMat[,1])/2)
-rownames(tech_pool) <- condMat$newName; colnames(tech_pool) <- unique(apply(condMat, 1, function(x){paste(x[c(1,3)], collapse = "-")}))
-for(i in 1:n_c){
-  tech_pool[i,] <- ifelse(colnames(tech_pool) == paste(condMat[i,c(1,3)], collapse = "-"), 1, 0)
-  }
+tech_pool_lIC <- matrix(NA, nrow = n_p, ncol = n_c/2)
+rownames(tech_pool_lIC) <- rownames(lfossMat_norm); colnames(tech_pool_lIC) <- unique(condMat$bioRep)
 
-bioConds <- matrix(NA, ncol = length(tech_pool[1,]), nrow = n_p); rownames(bioConds) <- rownames(lfossMat_norm); colnames(bioConds) <- colnames(tech_pool)
+tech_pool_SN <- tech_pool_rawlIC <- tech_pool_lIC
 
-for(j in 1:length(tech_pool[1,])){
-  bioConds[,j] <- apply(lfossMat_norm[,tech_pool[,j] == 1], 1, mean, na.rm = TRUE)
-  }
-bioConds[is.nan(bioConds)] <- NA
-
-#compare bioreplicates
-bio_pool <- matrix(0, nrow = length(bioConds[1,]), ncol = length(unique(condMat$segregant))); rownames(bio_pool) <- colnames(tech_pool); colnames(bio_pool) <- unique(condMat$segregant)
-for(i in 1:length(bio_pool[,1])){
-  bio_pool[i,] <- ifelse(colnames(bio_pool) == strsplit(rownames(bio_pool)[i], split = '-')[[1]][1], 1, 0)
-  }
-
-avgRepIC <- repSD <- RepN <- matrix(NA, ncol = length(bio_pool[1,]), nrow = length(bioConds[,1]))
-colnames(avgRepIC) <- colnames(repSD) <- colnames(RepN) <- colnames(bio_pool); rownames(avgRepIC) <- rownames(repSD) <- rownames(RepN) <- rownames(bioConds)
-for(j in 1:length(bio_pool[1,])){
-  subMat <- bioConds[,bio_pool[,j] == 1]
-  RepN[,j] <- rowSums(!is.na(subMat))
+for(j in 1:(n_c/2)){
   
-  avgRepIC[RepN[,j] >= 2,j] <- apply(subMat[RepN[,j] >= 2,], 1, mean, na.rm = TRUE)
-  repSD[RepN[,j] >= 2,j] <- apply(subMat[RepN[,j] >= 2,], 1, sd, na.rm = TRUE)
+  nvalid <- rowSums(!is.na(lfossMat_norm[,condMat$bioRep == colnames(tech_pool_lIC)[j]]))
+  # average logIC
+  tech_pool_lIC[nvalid != 0,j] <- apply(lfossMat_norm[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]], 1, mean, na.rm = TRUE)
+  # combined square coefficients of variation and convert back to SN
+  tech_pool_SN[nvalid != 0,j] <- nvalid[nvalid != 0]/sqrt(rowSums((1 / PepChargeSN[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]])^2, na.rm = T))
+  # raw average logIC
+  tech_pool_rawlIC[nvalid != 0,j] <- apply(log2(PepChargeMatrix[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]]), 1, mean, na.rm = TRUE)
   
   }
 
-plotting_metrics <- melt(avgRepIC); plotting_metrics <- cbind(plotting_metrics, melt(repSD)[,3], melt(RepN)[,3])
-colnames(plotting_metrics) <- c("peptide", "segregant", "meanIC", "sdIC", "N")
-plotting_metrics <- plotting_metrics[plotting_metrics$N >= 2,]
 
-SDIC_plotter <- ggplot(cbind(plotting_metrics, z = 1), aes(x = meanIC, y = sdIC, z = z)) + scale_x_continuous("peptide IC") + scale_y_continuous("sd between biological replicates") + scale_fill_gradient(low = "black", high = "firebrick1", name = "count", trans = "log") 
-SDIC_plotter + geom_hex()  
-ggsave("Figures/biorepMAplot.pdf", height = 10, width = 10)
+# compare bioreplicates
+bio_pool_lIC <- matrix(NA, nrow = n_p, ncol = length(unique(condMat$segregant)))
+rownames(bio_pool_lIC) <- rownames(lfossMat_norm); colnames(bio_pool_lIC) <- unique(condMat$segregant)
+
+bio_pool_lSN <- bio_pool_rawlIC <- bio_pool_lIC
+
+var_pred_stack <- NULL
+
+for(j in 1:ncol(bio_pool_lIC)){
+  index_match <- colnames(tech_pool_lIC) %in% condMat$bioRep[condMat$segregant == colnames(bio_pool_lIC)[j]]
+  nvalid <- rowSums(!is.na(tech_pool_lIC[,index_match]))
+  
+  # point estimate
+  bio_pool_lIC[nvalid != 0,j] <- apply(tech_pool_lIC[nvalid != 0, index_match], 1, mean, na.rm = T)
+  # combined square coefficients of variation and convert back to SN
+  bio_pool_lSN[nvalid != 0,j] <- log2(nvalid[nvalid != 0]/sqrt(rowSums((1 / tech_pool_SN[nvalid != 0, index_match])^2, na.rm = T)))
+  bio_pool_rawlIC[nvalid != 0,j] <- apply(tech_pool_rawlIC[nvalid != 0, index_match], 1, mean, na.rm = T)
+  
+  var_pred_stack <- rbind(var_pred_stack, data.frame(resid = tech_pool_lIC[nvalid == 2, index_match][,1] - bio_pool_lIC[nvalid == 2, j], SD = apply(tech_pool_rawlIC[nvalid == 2, index_match], 1, sd), lSN = bio_pool_lSN[nvalid == 2, j], lIC = bio_pool_rawlIC[nvalid == 2,j]))
+  
+  }
+
+
+### MA plot by lIC and lSN ###
+
+hex_theme <- theme(text = element_text(size = 23, face = "bold"), title = element_text(size = 25, face = "bold"), panel.background = element_rect(fill = "aliceblue"), 
+      legend.position = "top", strip.background = element_rect(fill = "cornflowerblue"), strip.text = element_text(color = "cornsilk"), panel.grid.minor = element_blank(), 
+      panel.grid.major = element_blank(), axis.line = element_blank(), legend.key.width = unit(6, "line")) 
+
+
+MA_melt <- melt(var_pred_stack, id.vars = c("resid", "SD"))
+colnames(MA_melt)[3] <- "Predictor"
+
+MA_plotter <- ggplot(MA_melt, aes(x = value, y = resid)) + facet_wrap(~ Predictor, scale = "free_x")
+MA_plotter + geom_hex(bins = 200) + scale_fill_gradientn(name = "Counts", colours = rainbow(7), trans = "log") + hex_theme
+
+ggsave("Figures/biorepMAplot.pdf", height = 10, width = 18)
+
+SN_IC_plotter + geom_hex(bins = 200) + scale_fill_gradientn(name = "Counts", colours = c("black", "burlywood", "firebrick1"), trans = "log") + hex_theme + scale_x_continuous("Average log2 ion-count") +
+  scale_y_continuous("log2 peptide signal:noise")
+ggsave("Figures/SN_ICcomp.pdf", height = 10, width = 18)
+
+
+
+
+#### Calculate a variance/precision kernal using two predictor (log ion count and log signal : noise ####
 
 nbins <- 1000
-binsize <- floor(length(plotting_metrics[,1])/nbins)
-leftover_counts <- length(plotting_metrics[,1]) - binsize*nbins
-bin_var <- data.frame(logIC = rep(NA, times = nbins), MLE_var = rep(NA, times = nbins))
-bin_dist_plot <- NULL
-ICorder <- order(plotting_metrics$meanIC, decreasing = FALSE)
+var_spline_pred <- list()
+var_spline_plot <- list()
 
-counter <- 0
-for(bin in 1:nbins){
+binsize <- floor(nrow(var_pred_stack)/nbins)
+binorder <- c(rep(1:(length(var_pred_stack[,1]) %% nbins), each = binsize + 1), rep(((length(var_pred_stack[,1]) %% nbins) + 1):nbins, each = binsize))
+
+var_pred_stack$SNbin <- binorder[rank(var_pred_stack$lSN)]
+var_pred_stack$ICbin <- binorder[rank(var_pred_stack$lIC)]
+
+bin_var_SN <- data.frame(predictor = rep(NA, times = nbins), MLE_var = NA) #predicting var(log2(SN))
+bin_var_IC <- data.frame(predictor = rep(NA, times = nbins), MLE_var = NA) #predicting var(log2(IC))
+
+bin_dist_plot <- NULL
+
+
+for(pred in c("SN", "IC")){
   
-  subMat <- plotting_metrics[ICorder[counter + c(1:(binsize + ifelse(bin <= leftover_counts, 1, 0)))],]
+  for(bin in 1:nbins){
+    data_subset <- var_pred_stack[var_pred_stack[,colnames(var_pred_stack) == paste(pred, "bin", sep = "")] == bin,]
+   
+    #calculate unbiased estimate of variance
+    resid_dist <- data_subset$resid[!is.na(data_subset$resid)]*sqrt(2)
+    
+    if(pred == "SN"){
+      bin_var_SN$predictor[bin] <- mean(data_subset$lSN)
+      bin_var_SN$MLE_var[bin] <-  mean(abs(resid_dist[abs(resid_dist) < sd(resid_dist)*3]))^2 #get the average residual magnitude and then square for the varianace
+      }else if(pred == "IC"){
+        bin_var_IC$predictor[bin] <- mean(data_subset$lIC)
+        bin_var_IC$MLE_var[bin] <-  mean(abs(resid_dist[abs(resid_dist) < sd(resid_dist)*3]))^2  
+        }
+    }
   
-  bin_var$logIC[bin] <- mean(subMat$meanIC)
-  bin_var$MLE_var[bin] <- mean(subMat$sdIC[subMat$sdIC <= mean(subMat$sdIC) * 3])^2
+   if(pred == "SN"){
+     spline_pred <- bin_var_SN
+     }else if(pred == "IC"){
+       spline_pred <- bin_var_IC
+      }
   
-  counter <- counter + (binsize + ifelse(bin <= leftover_counts, 1, 0))
+  var_spline <- smooth.spline(x = spline_pred$predictor, y = spline_pred$MLE_var, df = 11)
+  var_spline_pred[[pred]] <- var_spline
+  var_spline_plot$spline <- rbind(var_spline_plot$spline, data.frame(predict(var_spline, seq(min(spline_pred$predictor), max(spline_pred$predictor), diff(c(min(spline_pred$predictor), max(spline_pred$predictor)))/(nbins*10))), variable = pred))
+  var_spline_plot$bins <- rbind(var_spline_plot$bins, data.frame(spline_pred, variable = pred))
+  
   }
 
-var_spline <- smooth.spline(x = bin_var$logIC, y = bin_var$MLE_var, df = 10)
+scatter_theme <- theme(text = element_text(size = 23, face = "bold"), title = element_text(size = 25, face = "bold"), panel.background = element_rect(fill = "azure"), 
+      legend.position = "right", panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "pink"), axis.ticks = element_line(colour = "pink"),
+      strip.background = element_rect(fill = "cyan")) 
 
-pdf("Figures/variance(IC)spline.pdf", height = 10, width = 10)
-plot(var_spline, type = "l", lwd = 2, ylim = c(0, range(c(predict(var_spline, bin_var$logIC)$y, bin_var$MLE_var))[2]), xlab = "average log2 IC", ylab = "average variance across bin")
-points(bin_var$logIC, bin_var$MLE_var, pch = 16, cex = 0.8, col = "RED")
-dev.off()
+
+ggplot() + geom_point(data = var_spline_plot$bins, aes(x = predictor, y = MLE_var, color = "blue", size = 3)) + geom_line(data = var_spline_plot$spline, aes(x = x, y = y, color = "RED", size = 2)) + facet_wrap(~ variable, scale = "free_x") +
+  scatter_theme + scale_x_continuous("Log2 Predictor") + scale_y_continuous("average pooled variance") + scale_color_identity() + scale_size_identity() 
+ggsave("Figures/varianceSpline.pdf", height = 10, width = 18)
+
+
+ggplot() + facet_grid(~ instrument) + geom_line(data = var_spline_plot$spline, aes(x = x, y = y, color = "RED", size = 2)) + scatter_theme + scale_x_continuous("Log average H/L IC") + scale_y_continuous("average pooled standard deviation") + scale_color_identity() + scale_size_identity() + geom_point(data = var_spline_plot$bins, aes(x = log10(SN), y = MLE_var, color = "blue", size = 3))
+
+
+#### convert absolute abundances to relative measured by subtracting the median(log2(IC)) of each row ####
+
+library(impute)
+quality_frac <- 0.2
+
+imputedAbund <- impute.knn(tech_pool_lIC, rowmax = 0.8, colmax = 1-quality_frac)
+peptide_median <- apply(imputedAbund$data, 1, median)
+
+heatmap.2(imputedAbund$data - peptide_median %*% t(rep(1, ncol(imputedAbund$data))), trace = "none")
+
+rel_tech_pool_lIC <- tech_pool_lIC - peptide_median %*% t(rep(1, ncol(imputedAbund$data)))
+#plot(rel_tech_pool_lIC[13,] ~ factor(condMatBioreps$segregant))
+
+
+
+# fit SD(IC) or SD(SN)
+# fit a linear model with weights of SD(IC) to determine point estimates abundance
+# determine the extent of over-dispersion (plot across proteins)
+# shrink overdispersion based on sd(OD) through cross-validation
+
+condMatBioreps <- condMat[sapply(colnames(tech_pool_lIC), function(x){c(1:nrow(condMat))[condMat$bioRep == x][1]}),]
+n_c <- length(unique(condMatBioreps$segregant))
+n_e <- nrow(condMatBioreps)
+
+
+segregants <- unique(condMatBioreps$segregant)
+point_estimates <- matrix(NA, ncol = n_c, nrow = n_p); rownames(point_estimates) <- rownames(tech_pool_lIC); colnames(point_estimates) <- segregants
+precision_estimates <- point_estimates
+dispersion_table <- data.table(dispersion_adj = rep(NA, n_p), dispersion_SW_test = NA, log_dispersion_SD = NA)
+
+
+for(a_pep_n in 1:n_p){
+  
+  peptide_model <- data.table(RA = rel_tech_pool_lIC[a_pep_n,], SN = log2(tech_pool_lSN[a_pep_n,]), index = 1:n_e, condMatBioreps)
+  peptide_model <- peptide_model[!is.na(peptide_model$RA),]
+  
+  if(nrow(peptide_model) <= n_e*quality_frac){next}
+  
+  peptide_model[, var_fit:=predict(var_spline_pred$SN, SN)$y, by=index]
+  peptide_model <- peptide_model[is.finite(peptide_model$var_fit),] #remove infinite variance because not informative
+  
+  ### fitting condition-specific peptide abundance ###
+  
+  peptide_model[, fitted:=weighted.mean(RA, 1/var_fit), by=segregant]
+  
+  ### Determine the extent of peptide-level overdispersion ###
+  if(sum(table(peptide_model$segregant) >= 2) >= 5){
+    repeated_conds <- peptide_model
+    repeated_conds[, nreps:=length(fitted), by=segregant]
+    repeated_conds <- repeated_conds[repeated_conds[,nreps >= 2],]
+    
+    dispersion_table$dispersion_adj[a_pep_n] <- mean(repeated_conds[, (RA - fitted)^2 * nreps/(nreps - 1) * (1/var_fit),])
+    dispersion_table$dispersion_SW_test[a_pep_n] <- shapiro.test(repeated_conds[, (RA - fitted) * sqrt(nreps/(nreps - 1)) * 1/sqrt(var_fit*dispersion_table$dispersion_adj[a_pep_n]) ,])$p
+    dispersion_table$log_dispersion_SD[a_pep_n] <- CV_dispersions(repeated_conds)
+    
+    } else{dispersion_table$dispersion_adj[a_pep_n] <- 1}
+    
+  peptide_model$precision_adj <- 1/(peptide_model$var_fit*dispersion_table$dispersion_adj[a_pep_n])
+  
+  seg_summary <- data.frame(segregants = segregants, RA = NA, precision = NA)
+  for(a_cond in 1:n_c){
+    seg_summary[a_cond, 2:3] <- c(peptide_model$fitted[peptide_model$segregant == segregants[a_cond]][1], sum(peptide_model$precision_adj[peptide_model$segregant == segregants[a_cond]]))
+    }
+  
+  point_estimates[a_pep_n,] <- seg_summary$RA
+  precision_estimates[a_pep_n,] <- seg_summary$precision
+  
+  if(a_pep_n %% 1000 == 0){print(paste(a_pep_n, "peptides analyzed"))}
+  
+}
+
+
+fraction_plot <- data.table(min = (seq(0, 1, by = 0.2)*n_e)[1:5], max = (seq(0, 1, by = 0.2)*n_e)[2:6], min_label = seq(0, 100, by = 20)[1:5], max_label = seq(0, 100, by = 20)[2:6])
+fraction_plot[,label:= paste(c(paste(c(min_label, max_label), collapse = "-"), "%"), collapse = ""),by = min]
+
+dispersion_table$nvals <- rowSums(!is.na(rel_tech_pool_lIC))
+dispersion_table[, sample_fraction:= fraction_plot$label[fraction_plot$max >= nvals][1], by = nvals]
+
+ggplot(dispersion_table, aes(x = dispersion_SW_test)) + facet_wrap(~ sample_fraction, ncol = 5) + geom_bar(binwidth = 0.05)
+ggplot(dispersion_table, aes(x = log10(dispersion_SW_test))) + facet_wrap(~ sample_fraction, ncol = 5) + geom_bar(binwidth = 0.05)
+
+###
+
+dispersion_adj_df <- dispersion_table[!is.na(log_dispersion_SD),]
+
+###
+ggplot(dispersion_adj_df, aes(x = log2(dispersion_adj), y = log_dispersion_SD, color = nvals)) + geom_point(size = 3)
+
+###
+mean_spline <- smooth.spline(log2(dispersion_adj_df$dispersion_adj) ~ dispersion_adj_df$nvals, df = 3)
+
+plot(data = dispersion_adj_df, log2(dispersion_adj) ~ jitter(nvals), pch = 16, cex = 0.5)
+lines(predict(mean_spline, 1:n_e)$y ~ c(1:n_e), lwd = 3, col = "RED")
+
+###
+dispersion_adj_df$centered_dispersion <- log2(dispersion_adj_df$dispersion_adj) - predict(mean_spline, dispersion_adj_df$nvals)$y
+plot(data = dispersion_adj_df, centered_dispersion ~ jitter(nvals), pch = 16, cex = 0.5)
+
+
+###
+dispersion_adj_df[,lambda_est:=sapply(dispersion_adj_df[,centered_dispersion^2 - log_dispersion_SD^2,], function(x){max(0, x)}),]
+dispersion_adj_df[,shrunk_estimate:=lambda_est/(lambda_est + log_dispersion_SD)*centered_dispersion,]
+dispersion_adj_df[,predicted_dispersion:=2^shrunk_estimate,]
+
+ggplot(dispersion_adj_df, aes(x = centered_dispersion, y = shrunk_estimate, col = nvals)) + geom_point()
+
+
+###
+
+dispersion_shrinkageDF <- melt(dispersion_adj_df, measure.vars = c("dispersion_adj", "predicted_dispersion"), id.vars = c("nvals", "sample_fraction"))
+
+ggplot(dispersion_shrinkageDF, aes(y = log2(value), x = sample_fraction)) + facet_grid(~ variable) + geom_violin(scale = "count", fill = "RED")
+
+### adjust precision by 1/(ODcorrected/OD)
+precision_estimates[!is.na(dispersion_table$log_dispersion_SD),] <- precision_estimates[!is.na(dispersion_table$log_dispersion_SD),]/(dispersion_adj_df[,predicted_dispersion/dispersion_adj,] %*% t(rep(1, n_c)))
+
+
+
+
+
+
+
+
+
+
+
 
 #### fit peak dependent variance(IC) and peptide-specific dispersion
 
