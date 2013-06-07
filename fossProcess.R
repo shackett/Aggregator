@@ -253,7 +253,7 @@ dispersion_table <- data.table(dispersion_adj = rep(NA, n_p), dispersion_SW_test
 
 for(a_pep_n in 1:n_p){
   
-  peptide_model <- data.table(RA = rel_tech_pool_lIC[a_pep_n,], SN = log2(tech_pool_lSN[a_pep_n,]), index = 1:n_e, condMatBioreps)
+  peptide_model <- data.table(RA = rel_tech_pool_lIC[a_pep_n,], SN = log2(tech_pool_SN[a_pep_n,]), index = 1:n_e, condMatBioreps)
   peptide_model <- peptide_model[!is.na(peptide_model$RA),]
   
   if(nrow(peptide_model) <= n_e*quality_frac){next}
@@ -291,7 +291,6 @@ for(a_pep_n in 1:n_p){
   
 }
 
-
 fraction_plot <- data.table(min = (seq(0, 1, by = 0.2)*n_e)[1:5], max = (seq(0, 1, by = 0.2)*n_e)[2:6], min_label = seq(0, 100, by = 20)[1:5], max_label = seq(0, 100, by = 20)[2:6])
 fraction_plot[,label:= paste(c(paste(c(min_label, max_label), collapse = "-"), "%"), collapse = ""),by = min]
 
@@ -299,44 +298,63 @@ dispersion_table$nvals <- rowSums(!is.na(rel_tech_pool_lIC))
 dispersion_table[, sample_fraction:= fraction_plot$label[fraction_plot$max >= nvals][1], by = nvals]
 
 ggplot(dispersion_table, aes(x = dispersion_SW_test)) + facet_wrap(~ sample_fraction, ncol = 5) + geom_bar(binwidth = 0.05)
+ggsave("Figures/SWtest_pvals.pdf", height = 8, width = 16)
+
 ggplot(dispersion_table, aes(x = log10(dispersion_SW_test))) + facet_wrap(~ sample_fraction, ncol = 5) + geom_bar(binwidth = 0.05)
+ggsave("Figures/SWtest_pvals_log10.pdf", height = 8, width = 16)
 
 ###
 
 dispersion_adj_df <- dispersion_table[!is.na(log_dispersion_SD),]
 
 ###
-ggplot(dispersion_adj_df, aes(x = log2(dispersion_adj), y = log_dispersion_SD, color = nvals)) + geom_point(size = 3)
+ggplot(dispersion_adj_df, aes(x = log2(dispersion_adj), y = log_dispersion_SD, color = nvals)) + geom_point(size = 3) + scatter_theme
+ggsave("Figures/dispersionPar.pdf", height = 8, width = 16)
 
 ###
+
+pdf("Figures/dispersionByN.pdf", height = 12, width = 12)
+
 mean_spline <- smooth.spline(log2(dispersion_adj_df$dispersion_adj) ~ dispersion_adj_df$nvals, df = 3)
 
-plot(data = dispersion_adj_df, log2(dispersion_adj) ~ jitter(nvals), pch = 16, cex = 0.5)
+plot(data = dispersion_adj_df, log2(dispersion_adj) ~ jitter(nvals), pch = 16, cex = 0.5, main = "average dispersion changes with number of non-missing values")
 lines(predict(mean_spline, 1:n_e)$y ~ c(1:n_e), lwd = 3, col = "RED")
 
 ###
 dispersion_adj_df$centered_dispersion <- log2(dispersion_adj_df$dispersion_adj) - predict(mean_spline, dispersion_adj_df$nvals)$y
-plot(data = dispersion_adj_df, centered_dispersion ~ jitter(nvals), pch = 16, cex = 0.5)
+plot(data = dispersion_adj_df, centered_dispersion ~ jitter(nvals), pch = 16, cex = 0.5, main = "average dispersion's dependence on N removed")
 
+dev.off()
 
 ###
 dispersion_adj_df[,lambda_est:=sapply(dispersion_adj_df[,centered_dispersion^2 - log_dispersion_SD^2,], function(x){max(0, x)}),]
 dispersion_adj_df[,shrunk_estimate:=lambda_est/(lambda_est + log_dispersion_SD)*centered_dispersion,]
 dispersion_adj_df[,predicted_dispersion:=2^shrunk_estimate,]
 
-ggplot(dispersion_adj_df, aes(x = centered_dispersion, y = shrunk_estimate, col = nvals)) + geom_point()
+ggplot(dispersion_adj_df, aes(x = centered_dispersion, y = shrunk_estimate, col = nvals)) + geom_point() + scatter_theme + ggtitle("shrinkage of overdispersion parameter towards 0") + scale_x_continuous("Centered dispersion MLE") +
+  scale_y_continuous("Dispersion shrunk by var(dispersion estimate)") + scale_color_gradient(low = "BLACK", high = "RED")
+ggsave("Figures/shrunkDispersion.pdf", height = 12, width = 16)
 
 
 ###
 
 dispersion_shrinkageDF <- melt(dispersion_adj_df, measure.vars = c("dispersion_adj", "predicted_dispersion"), id.vars = c("nvals", "sample_fraction"))
+levels(dispersion_shrinkageDF$variable) <- c("Dispersion MLE", "Dispersion after centering and shrinkage")
 
-ggplot(dispersion_shrinkageDF, aes(y = log2(value), x = sample_fraction)) + facet_grid(~ variable) + geom_violin(scale = "count", fill = "RED")
+boxplot_theme <- theme(text = element_text(size = 20, face = "bold"), title = element_text(size = 25, face = "bold"), panel.background = element_rect(fill = "aliceblue"), legend.position = "top", 
+  panel.grid = element_blank(), axis.ticks.x = element_blank(), axis.text.x = element_text(size = 20, angle = 60, vjust = 0.6), axis.line = element_blank(), strip.background = element_rect(fill = "darkseagreen2"),
+  strip.text = element_text(size = 25, colour = "darkblue"))
+
+ggplot(dispersion_shrinkageDF, aes(y = log2(value), x = sample_fraction)) + facet_grid(~ variable) + geom_violin(scale = "count", fill = "RED") + boxplot_theme +
+  scale_x_discrete("Fraction of non-missing values") + scale_y_continuous("log2 (Dispersion)")
+ggsave("Figures/dispersionViolin.pdf", height = 12, width = 20)
+
 
 ### adjust precision by 1/(ODcorrected/OD)
 precision_estimates[!is.na(dispersion_table$log_dispersion_SD),] <- precision_estimates[!is.na(dispersion_table$log_dispersion_SD),]/(dispersion_adj_df[,predicted_dispersion/dispersion_adj,] %*% t(rep(1, n_c)))
 
-
+#save(point_estimates, precision_estimates, file = "peptide_point_est.Rdata")
+gc()
 
 ###### Estimate protein abundance by EM ######
 
@@ -369,28 +387,26 @@ mappingMat <- 1*t(ProtPepMatrix) #trans and convert from boolean to binary
 
 #combine degenerate proteins together if all the peptides associated with multiple proteins are shared
 
-degen_prots <- apply(mappingMat, 2, function(prot){
-  paste(prot, collapse = "")
-	})
+prot_assoc_vec <- apply(mappingMat, 2, function(prot){paste(prot, collapse = "")})
+degen_prot_patterns <-  names(table(prot_assoc_vec))[unname(table(prot_assoc_vec)) > 1]
 
-degen_prot_patterns <- names(table(degen_prots))[unname(table(degen_prots)) > 1]
 
 degen_prot_matches <- list()
 degen_mappings <- NULL
 for(pat in 1:length(degen_prot_patterns)){
 	
-	degen_prot_matches[[paste(colnames(mappingMat)[degen_prots %in% degen_prot_patterns[pat]], collapse = "/")]] <- colnames(mappingMat)[degen_prots %in% degen_prot_patterns[pat]]
-	degen_mappings <- cbind(degen_mappings, mappingMat[,degen_prots %in% degen_prot_patterns[pat]][,1])
+	degen_prot_matches[[paste(colnames(mappingMat)[prot_assoc_vec  %in% degen_prot_patterns[pat]], collapse = "/")]] <- colnames(mappingMat)[prot_assoc_vec %in% degen_prot_patterns[pat]]
+	degen_mappings <- cbind(degen_mappings, mappingMat[,prot_assoc_vec %in% degen_prot_patterns[pat]][,1])
 	
 	}
 colnames(degen_mappings) <- names(degen_prot_matches)	
 
-unique_mappingMat <- cbind(mappingMat[,!(degen_prots %in% degen_prot_patterns)], degen_mappings)	
+unique_mappingMat <- cbind(mappingMat[,!(prot_assoc_vec %in% degen_prot_patterns)], degen_mappings)	
 
+unique_mappingMat[,colnames(unique_mappingMat) %in% c("YCL019W", "YCL020W", "YFL002W-B/YGR161W-A")]
 
 
 ## combine proteins with identical peptides into a single set
-
 
 unique_mappingMat <- unique_mappingMat[chmatch(colnames(uniquePepMean), rownames(unique_mappingMat)),]
 unique_mappingMat <- unique_mappingMat[,colSums(unique_mappingMat) != 0]
