@@ -383,7 +383,20 @@ uniquePepPrecision <- abund_precision_estimates %*% chargeStateCollapse
 uniquePepMean[is.nan(uniquePepMean)] <- 0
 
 ## reduce peptide - protein mapping to ascetained peptides and possible proteins and align with abundance colnames
+
 mappingMat <- 1*t(ProtPepMatrix) #trans and convert from boolean to binary
+
+## combine proteins with identical peptides into a single set
+
+mappingMat <- mappingMat[chmatch(colnames(uniquePepMean), rownames(mappingMat)),]
+mappingMat <- mappingMat[,colSums(mappingMat) != 0]
+
+## remove peptide with no protein matches
+uniquePepMean <- uniquePepMean[,rowSums(mappingMat) != 0]
+uniquePepPrecision <- uniquePepPrecision[,rowSums(mappingMat) != 0]
+mappingMat <- mappingMat[rowSums(mappingMat) != 0,]
+
+
 
 #combine degenerate proteins together if all the peptides associated with multiple proteins are shared
 
@@ -403,18 +416,7 @@ colnames(degen_mappings) <- names(degen_prot_matches)
 
 unique_mappingMat <- cbind(mappingMat[,!(prot_assoc_vec %in% degen_prot_patterns)], degen_mappings)	
 
-unique_mappingMat[,colnames(unique_mappingMat) %in% c("YCL019W", "YCL020W", "YFL002W-B/YGR161W-A")]
 
-
-## combine proteins with identical peptides into a single set
-
-unique_mappingMat <- unique_mappingMat[chmatch(colnames(uniquePepMean), rownames(unique_mappingMat)),]
-unique_mappingMat <- unique_mappingMat[,colSums(unique_mappingMat) != 0]
-
-## remove peptide with no protein matches
-uniquePepMean <- uniquePepMean[,rowSums(unique_mappingMat) != 0]
-uniquePepPrecision <- uniquePepPrecision[,rowSums(unique_mappingMat) != 0]
-unique_mappingMat <- unique_mappingMat[rowSums(unique_mappingMat) != 0,]
 
 n_p <- nrow(unique_mappingMat)
 n_prot <- ncol(unique_mappingMat)

@@ -1,0 +1,64 @@
+\documentclass[12pt]{article}
+\usepackage[left=0.5in,top=0.5in,right=0.5in,bottom=0.5in,nohead]{geometry}
+\usepackage{geometry}                % See geometry.pdf to learn the layout options. There are lots.
+\geometry{a4paper}                   % ... or a4paper or a5paper or ... 
+\usepackage{wrapfig}	%in-line figures
+\usepackage[numbers, super]{natbib}		%bibliography
+%\usepackage{pslatex} 	%for times new roman
+\usepackage[parfill]{parskip}    % Activate to begin paragraphs with an empty line rather than an indent
+\usepackage{graphicx}
+\usepackage{amssymb}
+\usepackage{epstopdf}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{subfig}
+\usepackage{wrapfig}
+\usepackage{graphics}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage{aurical}
+\usepackage[scaled]{helvet}
+\usepackage{multicol}
+\usepackage{upquote}
+\usepackage{tikz}
+
+\newcommand*\circled[1]{\tikz[baseline=(char.base)]{
+            \node[shape=circle,draw,inner sep=2pt] (char) {#1};}}
+
+\Sexpr{opts_chunk$set(tidy=TRUE, message=FALSE)}
+
+
+\author{Sean R. Hackett}
+\title{Peptides to Protein EM (Aggregator) and analysis} 
+\date{}
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+\setlength{\parskip}{0.5mm}
+\linespread{1}
+
+\thispagestyle{empty}
+\pagestyle{empty}
+
+\maketitle
+
+<<>>=
+library("stringr")
+
+phospho_sites <- read.delim('~/Desktop/Rabinowitz/FBA_SRH/ChemicalSpeciesQuant/Proteomics/phosphosites.txt', skip = 32, header = TRUE, stringsAsFactors = FALSE)
+
+phospho_sites_red <- phospho_sites[,colnames(phospho_sites) %in% c("A", "C", "R")]
+
+Psites <- cbind(knownPsites(divergentPep_summary, phospho_sites_red), knownPsites(background_SRYfreq, phospho_sites_red))
+colnames(Psites) <- c("Divergent", "Matched")
+
+xtable(Psites, caption = "Number of peptides within the protein-matched and non-matched classes which contain a phosphoGRID-annotated phosphorylation site", label = "phosphoSites")
+
+@
+
+In order to see if divergent peptides were enriched for phosphorylation sites, they were compared with known phosphorylation sites from phosphoGRID, to determine how many of the peptide intervals of matched and non-matched peptides contained known phospho-sites.  This produced the contingency table (table \ref{phosphoSites}), which has a significant enrichment of phospho-sites (\Sexpr{round(Psites[2,1]/sum(Psites[,1]), 3)} vs. \Sexpr{round(Psites[2,2]/sum(Psites[,2]), 3)}) according to a chi-square test (p-value: \Sexpr{signif(chisq.test(Psites)$p.value)}).
+
+
+
+\end{document}  
