@@ -1,4 +1,6 @@
-url.show("http://www.rqtl.org/rqtltour2.R")
+#url.show("http://www.rqtl.org/rqtltour2.R")
+
+options(stringsAsFactors = FALSE)
 
 library(qtl)
 library(data.table)
@@ -45,41 +47,14 @@ cross <- calc.genoprob(cross, step=1)
 #### perform two association methods, normal distribution weighting by precision and nonparameteric ####
 
 
-prot_QTL <- NULL
 nperms <- 100
-n.nodes <- 4
 
-library(snow)
-library(rlecuyer) #speeds up permutation testing over two-fold for 1000 perms
-sink("/dev/null") 
+prot_QTL <- map_pQTLs(nperms)
 
-for(a_prot_n in 1:(nphe(cross) - 1)){
-  linkage <- scanone(cross, pheno.col=a_prot_n + 1, model="normal", weights = prot_prec[a_prot_n,])
-  operm <- scanone(cross, model = "normal", method="hk", pheno.col=a_prot_n + 1, n.perm=nperms, weights = prot_prec[a_prot_n,], n.cluster = n.nodes)
-  weightedN <- summary(linkage, perms=operm, alpha=0.1, pvalues=TRUE, ci.function = "bayesint", format = "tabByCol")
-  
-  linkage <- scanone(cross, pheno.col=a_prot_n + 1, model="normal")
-  operm <- scanone(cross, model = "normal", method="hk", pheno.col=a_prot_n + 1, n.perm=nperms, n.cluster = n.nodes)
-  stdN <- summary(linkage, perms=operm, alpha=0.1, pvalues=TRUE, ci.function = "bayesint", format = "tabByCol")
-  
-  prot_output <- NULL
-  if(nrow(weightedN$lod) != 0){
-    prot_output <- rbind(prot_output, data.frame(protein = a_prot_n, method = "weightedN", weightedN))
-    }
-  if(nrow(stdN$lod) != 0){
-    prot_output <- rbind(prot_output, data.frame(protein = a_prot_n, method = "stdN", stdN))
-    }
-     
-  prot_QTL <- rbind(prot_QTL, prot_output)
-  
-  if(a_prot_n %% 10 == 0){
-    sink()
-    print(paste(round(a_prot_n/(nphe(cross) - 1) * 100, digits = 3), "% complete", sep = ""))
-    sink("/dev/null") 
-    }
-  }
-sink()
 write.table(prot_QTL, file = "QTLfiles/QTLtable.tsv", sep = "\t", row.names = F, col.names = T, quote = F)
+
+
+
 
 table(prot_QTL$method)
 
@@ -208,24 +183,8 @@ for(chr in sort(unique(geno_locus$chromosome))){
   geno[[chr]] <- chr_geno
 }
 
-cross$pheno <- t(prot_abund)
-cross$geno <- geno
-class(cross) <- c("bc", "cross")
 
 
-
-
-#cross=drop.markers(cross, row.names(geno.table(cross))[which(geno.table(cross)$RR<2 | geno.table(cross)$BB<2)])
-cross <- calc.genoprob(cross, step=1)
-argmax.geno(cross)
-
-linkage <- scanone(cross, pheno.col=2 , model="np")
-
-np_linkage_results = scanone(cross, pheno.col=2 , model="np")
-
-
-
-?calc.genoprob
 
 
 
@@ -240,9 +199,40 @@ np_linkage_results = scanone(cross, pheno.col=2 , model="np")
 
 
 
-
-
-cross=read.cross(format="csvs", genfile=genotype_file, 
-          phefile=phenotype_file, sep="\t", genotypes=c("0", "1"), na.strings=c("T", "N", "-", "NA", "2"),
-          alleles=c("R", "B"),
-          convertXdata=FALSE)
+map_pQTLs <- function(nperms = 100){
+  
+  prot_QTL <- NULL
+  n.nodes <- 4
+  
+  library(snow)
+  library(rlecuyer) #speeds up permutation testing over two-fold for 1000 perms
+  sink("/dev/null") 
+  
+  for(a_prot_n in 1:(nphe(cross) - 1)){
+    linkage <- scanone(cross, pheno.col=a_prot_n + 1, model="normal", weights = prot_prec[a_prot_n,])
+    operm <- scanone(cross, model = "normal", method="hk", pheno.col=a_prot_n + 1, n.perm=nperms, weights = prot_prec[a_prot_n,], n.cluster = n.nodes)
+    weightedN <- summary(linkage, perms=operm, alpha=0.1, pvalues=TRUE, ci.function = "bayesint", format = "tabByCol")
+    
+    linkage <- scanone(cross, pheno.col=a_prot_n + 1, model="normal")
+    operm <- scanone(cross, model = "normal", method="hk", pheno.col=a_prot_n + 1, n.perm=nperms, n.cluster = n.nodes)
+    stdN <- summary(linkage, perms=operm, alpha=0.1, pvalues=TRUE, ci.function = "bayesint", format = "tabByCol")
+    
+    prot_output <- NULL
+    if(nrow(weightedN$lod) != 0){
+      prot_output <- rbind(prot_output, data.frame(protein = a_prot_n, method = "weightedN", weightedN))
+    }
+    if(nrow(stdN$lod) != 0){
+      prot_output <- rbind(prot_output, data.frame(protein = a_prot_n, method = "stdN", stdN))
+    }
+    
+    prot_QTL <- rbind(prot_QTL, prot_output)
+    
+    if(a_prot_n %% 10 == 0){
+      sink()
+      print(paste(round(a_prot_n/(nphe(cross) - 1) * 100, digits = 3), "% complete", sep = ""))
+      sink("/dev/null") 
+    }
+  }
+  sink()
+  prot_QTL
+  }
