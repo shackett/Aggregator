@@ -40,7 +40,7 @@
 
 \title{Leveraging wide-data to improve protein quantification and
 inference}
-\author{Sean R. Hackett}
+\author{Sean R. Hackett, et al.}
 
 
 \maketitle
@@ -82,13 +82,28 @@ To do
 
 \section*{Results}
 
-The methods that I have developed revolve around two observations: A) Peptides differ in how noisy they are, but as the number of peptides measured from a protein increases, this protein's precision can be measured more accurately. B) As the number of conditions in which a peptide is quantified increases, some peptides noisily track the consensus protein abundance, while others depart strongly. These gross departures are either because a peptide is common to multiple proteins and therefore its trend is a mixture of theirs, or the peptide is the unmodified complement of a covalently-modified pool of nonascertained peptides. Because these covalent modifications such as phosphorylation, methylation affect protein activity and structure \textcolor{red}{cite} their specific detection is a huge area of active research \textcolor{red}{cite}.  While traditional approaches aimed at measuring these modifications do so by enriching and directly measuring these species, this \textit{peptide obscura} approach can measure the complement of all ascertained covalent-modified peptides simultaneously,
+The methods that I have developed revolve around two observations: A) Peptides differ in how noisy they are, but as the number of peptides measured from a protein increases, this protein's precision can be measured more accurately. B) As the number of conditions in which a peptide is quantified increases, some peptides noisily track the consensus protein abundance, while others depart strongly. These gross departures are either because a peptide is common to multiple proteins and therefore its trend is a mixture of theirs, or the peptide is the unmodified complement of a covalently-modified pool of nonascertained peptides. Because these covalent modifications such as phosphorylation, methylation affect protein activity and structure \textcolor{red}{cite} their specific detection is a huge area of active research \textcolor{red}{cite}.  While traditional approaches aimed at measuring these modifications do so by enriching and directly measuring these species, this \textit{peptide obscura} approach can measure the complement of all ascertained covalent-modified peptides simultaneously.
 
 While these two issues may seem separate, protein quantification depends upon choosing a relevant pool of peptides; while inferring protein mixtures and divergent peptides depends upon accurately measuring the relative abundance of proteins under each condition.
 
-To demonstrate and validate the utility of this approach, we used a previously published experiment looking at the abundance of X peptides corresponding to Y proteins across Z S. cerevisiae segregants each with two biological replicates.
+To demonstrate and validate the utility of this approach, we used a previously published experiment where X peptides corresponding to Y proteins were quantified across Z S. cerevisiae segregants each with two four replicates (two biological and two technical).
 
 \subsection*{The noise in mass spectrometry data}
+
+Before we can know how different peptides should be combined and how noisy they may be, we need an expression for the sampling distribution of an observed peptide abundance \textit{x} relative to its corresponding parental protein(s).  This distribution should ideally be an exponential family member for the provided analytical convenience and well studied properties \textcolor{red}{cite}.  Previous attempts to coax the form of p(\textit{x}) into a clean distribution have primarily focused on using a quasi-poisson sampling distribution predicated on mass spectrometry data fundamentally being count data \cite{Li:2010bj}.  In this form, p(\textit{x}) $\sim \mathbb{P}(\mu, \phi \mu)$, variance scales proportionally to protein abundance for a given peptide.  The over-dispersion parameter ($\phi$) accounts for electron multipliers amplifying ion-counts relative to actual ions coincident with the detector, as well as potentially peptide-specific differences in ion-count abundance due to chemical effects like ion suppression \textcolor{red}{cite}.  For this latter effect on variance, the actual dependence will vary with each sample, thereby precluding its estimation from ion counts alone.
+
+\textcolor{red}{SN inference ... , by JG}
+
+
+Associating signal:noise with the differences between pairs of replicates, it is apparent that this metric is able to better capture the residuals between pairs of replicates, and therefore variances determined based on log signal:noise will be more accurate than when taken directly from log ion-counts.  That variance partially scales with log-ion count is due to its weak correlation with log signal:nose, ion counts has no predictive benefit beyond what is captured by the signal:noise \textcolor{red}{validate using ANOVA}.  The meaningful departures that are added between these two predictors are unknown multiplicative error effects due to their symmetry in log-space (e.g. a coelluting peak decreases ion detection by 20\%) \textcolor{red}{examples of multiplicative errors} which are the norm in biological data such as microarrays and fluorescent protein quantification \textcolor{red}{cite x 2 - microarray and fluorescent protein log-normality}.  The presence of multiplicative error of a similar form to microarray data, suggests that utilizing methods informed by the microarray-like log-normal distribution may be appropriate.
+
+\textcolor{red}{R1 ~ R2 scatter plot}\\
+\textcolor{red}{log IC and log SN MA plot}\\
+\textcolor{red}{log IC ~ log SN}
+
+
+
+
 
 log(sd) is a decreasing function of intensity - draw equivalence to microarray analysis
 
@@ -117,7 +132,7 @@ There are three ways in which the previous direct inference of protein trends fr
 
 \textbf{Degenerate peptides:} Not all peptides have a 1-1 mapping between their sequence and a unique protein. In our trial dataset this fraction of degenerate peptides is relatively low, XXX. While these degenerate peptides could be discarded, patterns of protein overlap tend to be highly non-random such that some pairs of highly-related paralogs may have many more shared than unique peptides. Discarding these peptides may greatly reduce the signal for these proteins, limiting our ability to detect their relative abundance. This problem is compounded as organismal complexity both because a higher number of total number of proteins elevates the overlap of shared domains gene families, as well as the expansion of paralogous gene families.
 
-Show overlap of protein families
+\textcolor{red}{Show overlap of protein families}
 
 While degenerate peptides can not be used to directly inform protein trends, they are not information-free. Rather, the relative abundance trend of each degenerate peptide will be some mixture of the trends of each of the proteins it could have come from. Jointly using peptides which are unique to a protein and peptides which are ambiguous, a relative mixture of confounded proteins can be found.
 
@@ -216,10 +231,69 @@ The accuracy with which a peptide's relative abundance can be measured depends u
 - peptides vary in how noisy they are (correct for peptide-specific dispersion)
 
 
+\subsection*{Proteomics Workflow}
+
+Analysis of raw data (\textcolor{red}{JG})
+\begin{itemize}
+\item[1] Determine peptides consistent with each MS-2
+\item[2] Attribute peptide identities to each peak
+\item[3] Determine a set of proteins which match the identified peptides
+\item[4] Integrate over the isotopic variants of a single peak across all fractions to determine the IC
+\item[5] Determine the signal:noise of a set of isotopic variant (peptide * sample * label)
+\begin{itemize}
+\item[*] If an internal-labelling approach is utilized, calculate the signal:noise of a Heavy:light ratio
+\end{itemize}
+\end{itemize}
+
+Data Preparation
+\begin{itemize}
+\item[1] Normalization
+\begin{itemize}
+\item[a] Internal-labelling: calculate a ``reference'' sample by taking the median abundance of each peptide across conditions in which it was measured.  For each experimental sample, calculate a scaling factor by comparing a vector of experimental IC to the ``reference''
+\item[b] Label-free: Set the median(\sfrac{L}{H}) to zero unless the experimental and reference samples differ in a way that can strongly inform this deviation
+\end{itemize}
+\item[2] Filter extreme outliers
+\item[3] Measure SD(IC or SN)
+\item[4] Estimate the relative abundance of each peptide using weighted linear regression or linear-mixed effects models.  Calculate the precision of this relative abundance expectation.
+\item[5] Combine peptides which only differ in ionization state and/or methionine oxidation into single peptide abundances.
+\end{itemize}
+
+Protein Inference
+
+Initialization:
+\begin{itemize}
+\item[1] Partition proteins with overlapping peptides into disjoint subsets and set them as being equally abundant
+\item[2] Determine which proteins fall into the subsumable or subset class - $\alpha_{K} = 1$
+\end{itemize}
+
+Iteration:
+\textcolor{red}{check dimensions in code to fix the multiplications}
+\begin{itemize}
+\item[1] protein abundance: $\mathbf{\Omega}_{KC} = \frac{(\textbf{X}_{IC}\circ\mathcal{T}^{2}_{IC}) \mathbf{\Theta}_{IK}}{\mathcal{T}^{2}_{IC}\mathbf{\Theta}_{IK}}$
+\item[2] protein precision: $\mathbf{\Xi}_{KC} = \mathcal{T}^{2}_{IC}\mathbf{\Theta}_{IK}$
+
+
+\end{itemize}
+
+
+
+\subsection*{Application to a Biological Problem: Inferring Genetic Variants Effects Patterns of Proteome-wide variation}
+
+The extent to which proteome variation i
+
+
+
+
+summary metrics\\
+Cis vs. trans protein variation\\
+Hotspot prominence\\
+Protein-transcript correlation\\
+
 
 
 
 \section*{Discussion}
+
 
 \color{red}
 \begin{itemize}
@@ -255,7 +329,7 @@ When using relative variation in peptides to predict variation in protein abunda
 
 \begin{itemize}
 \item[\textbf{X}$_{IC}$:] Data matrix: Input MS data of the relative abundance of each peptide across \textbf{C} conditions
-\item[$\sigma^{2}_{IC}$/$\tau^{2}_{IC}$:] [I] Fitted variance/precision relative to peptide IC for each spectra.
+\item[$\sigma^{2}_{IC}$/$\mathcal{T}^{2}_{IC}$:] [I] Fitted variance/precision relative to peptide IC for each spectra.
 \item[\textbf{M}$_{IK}$:] Possible mappings between peptides (\textbf{I}) and proteins (\textbf{K})
 \item[$\mathbf{\Theta}_{IK}$:] Responsibility matrix: fraction of peptide \textbf{i} contributed by protein \textbf{k}.
 \item[$\mathbf{\Omega}_{KC}$:] Point estimate for each protein$\cdot$condition.

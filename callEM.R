@@ -61,6 +61,8 @@ for(entry in 1:length(entry_split)){
   relFract[[entry]] <- rep((1/length(subGraphs[[entry]])), times =  length(subGraphs[[entry]]))  
 }
 
+#plot_proteinConnections(overlapMat)
+
 
 
 #save the estimates of mixing fractions generated on a per-peptide basis
@@ -86,8 +88,7 @@ while(continue_it){
 	
   prot_abund = ((uniquePepMean*uniquePepPrecision) %*% Diagonal(n_p, pi_fit) %*% mixing_fract)/(uniquePepPrecision %*% Diagonal(n_p, pi_fit) %*% mixing_fract)
 	prot_abund <- as.matrix(Matrix(prot_abund, sparse = FALSE))
-	prot_abund[is.nan(prot_abund)] <- 0
-	
+	prot_abund[is.nan(prot_abund) | is.infinite(prot_abund)] <- 0
   
   #update protein precision
 	prot_prec <- uniquePepPrecision %*% Diagonal(n_p, pi_fit) %*% mixing_fract
@@ -105,9 +106,10 @@ while(continue_it){
   
   for(peptide in ambig_peps){
     n_matches <- sum(sparse_mapping[peptide,]*alpha_pres)
-    solution <- lsei(A = prot_abund[,sparse_mapping[peptide,]*alpha_pres == 1]*uniquePepPrecision[,peptide], B = uniquePepMean[,peptide] * uniquePepPrecision[,peptide], E = t(rep(1, times = n_matches)), F = 1, G = diag(n_matches), H = rep(0, times = n_matches))$X
-    mixing_fract_inconsistent[peptide,sparse_mapping[peptide,]*alpha_pres == 1] <- solution
-    }
+    if(n_matches != 0){
+      solution <- lsei(A = prot_abund[,sparse_mapping[peptide,]*alpha_pres == 1]*uniquePepPrecision[,peptide], B = uniquePepMean[,peptide] * uniquePepPrecision[,peptide], E = t(rep(1, times = n_matches)), F = 1, G = diag(n_matches), H = rep(0, times = n_matches))$X
+      mixing_fract_inconsistent[peptide,sparse_mapping[peptide,]*alpha_pres == 1] <- solution
+      }}
   
   ### update mixing fractions based on weighted quadratic programming over each isolated bipartite graph ####
   for(graph_part in 1:length(subGraphs)){
@@ -158,6 +160,7 @@ while(continue_it){
       protStack <- protStack[,matchedCombo == 1]
       
       solution <- lsei(A = protStack, B = pepVec, E = rep(1, sum(matchedCombo)), F = 1, G = diag(rep(1, sum(matchedCombo))), H = rep(0, times = sum(matchedCombo)))$X
+      solution <- sapply(solution, function(x){max(0, x)})
       combo_mixes[a_combo,matchedCombo==1] <- solution
       combo_mixes[a_combo,matchedCombo==0] <- NA
       combo_precision <- c(combo_precision, precTotal)
@@ -174,7 +177,14 @@ while(continue_it){
           comboMatches <- pepCombos %in% uniqueCombos[a_combo]
           matchedCombo <- as.numeric(strsplit(uniqueCombos[a_combo], split = "")[[1]])
           subMixes <- combo_mixes[,matchedCombo == 1]/rowSums(combo_mixes[,matchedCombo == 1], na.rm = TRUE)
+          
           wsubMix <- subMixes * combo_precision
+          wsubMix <- wsubMix[rowSums(combo_mixes[,matchedCombo == 1], na.rm = TRUE) != 0,]
+          
+          if(is.vector(wsubMix)){
+            mixing_fract[relPep, relProt][comboMatches,matchedCombo == 1] <- wsubMix / sum(wsubMix)
+            next
+            }
           
           mix_converge <- FALSE
           
@@ -203,7 +213,6 @@ while(continue_it){
     #for peptides which are uncontested set mixing fraction at 1 - this corrects for the point when some peptides become unambiguous after degenerate peptides are removed 
     mixing_fract[relPep, relProt][rowSums(sparse_mapping[relPep, relProt]) == 1,] <- as.matrix(sparse_mapping[relPep, relProt][rowSums(sparse_mapping[relPep, relProt]) == 1,])
   }  
-    
     
   if(set_alpha == TRUE){ 
   
@@ -295,7 +304,7 @@ save(list = ls(), file = "tmp2.Rdata")
 
 
 ### Rescue divergent peptides which have a high correlation with protein, but may be have innappropriately estimated precision or have a different offset between H/L than other peptides (e.g. degradation) ####
- 
+  
 comp_protein <- t(prot_abund %*% t(mixing_fract[pi_fit == 0,]))
 divergent_peptides <- t(uniquePepMean[,pi_fit == 0])
 comp_protein[comp_protein == 0] <- NA; divergent_peptides[divergent_peptides == 0] <- NA
@@ -474,14 +483,21 @@ background_SRYfreq$possible_phosphoSite <- background_SRYfreq$nS != 0 | backgrou
 
 
 
+
+
+
 #how many peptides are informing a protein trend, with only the largest effect considered
 barplot(table(table(max_state)), xlab = "Number of peptides for which a protein dominates pattern", ylab = "Frequency")
 
+heatmap.2(t(prot_abund), trace = "none", col = blue2yellow(100))
+heatmap.2(t(uniquePepMean[,pi_fit == 0]), trace = "none", col = blue2yellow(100))
 
-if(unq_matches_only == TRUE){
-	save(prot_abund, prot_prec, sparse_mapping, mixing_fract, whole_data_logL, max_state, div_max, divergentPep_summary, background_SRYfreq, likdiff_df, pi_fit, alpha_pres, file = "EMoutputUnq.Rdata")
-	}else{
-		save(prot_abund, prot_prec, sparse_mapping, mixing_fract, whole_data_logL, max_state, div_max, divergentPep_summary, background_SRYfreq, likdiff_df, pi_fit, alpha_pres, file = "EMoutputDeg.Rdata")
-	}
 
+
+EMoutput <- list()
+EMoutput$EM_point <- rbind(t(prot_abund[,alpha_pres == 1]), t(uniquePepMean[,pi_fit == 0]))
+EMoutput$EM_prec <- rbind(t(as.matrix(prot_prec[,alpha_pres == 1])), t(uniquePepPrecision[,pi_fit == 0]))
+EMoutput$type = c(rep("Protein", sum(alpha_pres == 1)), rep("Peptide", sum(pi_fit == 0)))
+
+save(EMoutput, divergentPep_summary, background_SRYfreq, file = "EMoutput.Rdata")
 
