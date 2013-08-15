@@ -25,8 +25,31 @@ seg_metabolomics_header <- read.table("analysis/segMetAbundance.tsv", nrows = 1)
 colnames(seg_metabolomics) <- seg_metabolomics_header
 
 ### protein point estimates ###
+# Aggregator estmates
 load("EMoutput.Rdata")
 load("Foss2007/20130602Foss2007ProtPepMatrices.Rdata")
+
+# Raw data to calculate median estimate
+load("EMimport.Rdata")
+
+uniquePepMean
+unique_mappingMat
+# remove degenerate peptides
+degen_peps <- rowSums(unique_mappingMat) == 1
+
+uniqueMap <- unique_mappingMat[degen_peps,]
+protMatch <- colnames(uniqueMap)[apply(uniqueMap, 1, function(x){which.max(x)})] # which protein matches each non-degenerate peptide
+
+uniqueAbund <- uniquePepMean[,degen_peps]
+uniqueAbund[uniqueAbund == 0] <- NA # a RA of 0 is equivalent to NA (the precision of these was set to zero to remove their influence elsewhere)
+colnames(uniqueAbund) <- c(1:ncol(uniqueAbund))
+
+protQuantMelt <- melt(uniqueAbund)
+colnames(protQuantMelt) <- c("segregant", "peptideIndex", "RA")
+protQuantMelt$protein <- protMatch[protQuantMelt$peptideIndex]
+
+protQuantCast <- acast(protQuantMelt, formula = protein ~ segregant, value.var = "RA", fun.aggregate = function(x){median(x, na.rm = T)})
+
 
 
 ### look at segregants with measured genotypes and proteomics ###
