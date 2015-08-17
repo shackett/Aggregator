@@ -47,11 +47,8 @@ colnames(PepChargeMatrix) <- condMat$newName
 colnames(PepChargeSN) <- condMat$newName
 
 # median polish of columns
-
-log_IC <- log2(PepChargeMatrix)
-logIC <- robust_median_polish(log_IC)
   
-sample_log_IC = logIC
+sample_log_IC = robust_median_polish(log2(PepChargeMatrix))
 reference_log_IC = NULL
 
 make_equiv_species_mat <- data.frame(peptide = rownames(sample_log_IC)) %>% tidyr::separate(peptide, into = c("unique", "charge"), remove = F)
@@ -64,252 +61,112 @@ mapping_mat = t(ProtPepMatrix)
 power_surrogate = log2(PepChargeMatrix)
 power_surrogate = log2(PepChargeSN)
 
+input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, power_surrogate)
 
-data_setup <- function(sample_log_IC = logIC,
-                       reference_log_IC = NULL,
-                       equiv_species_mat = NULL,
-                       mapping_mat = NULL,
-                       power_surrogate = NULL){
+
+rownames(design_df) <- NULL
+design_df <- condMat
+id_column = "newName"
+fixed_effects = "segregant"
+random_effects = "bioR"
+
+design_setup <- function(design_df, id_column, fixed_effects, random_effects = NULL){
   
-  require(Matrix)
+  # specify columns with random and fixed effects
+  # We are seeking a point estimate of the categorical fixed effects
+  # Uncertainty about these effects is governed by biological and technical variance
+  # When both biological and technical replicates are present, biological replicates should be
+  # treated as random effects and technical replicates are not explicitely specified
   
-  # sample_log_abundance [i peptides x k samples]
-  # reference_log_abundance (optional) [i peptides x k samples]
-  # equiv_species_mat [i peptides x i' unique peptides]
-    # if any species are combined before inferring proteins
-  # mapping_mat - sparse i or i' peptides x j proteins
-    # mapping of peptides to proteins
-  # power_surrogate - e.g. logIC or logSN (optional)
+  ### check for valid arguements ###
   
-  # Setup log abundances
-  if(class(sample_log_IC) != "matrix"){
-    stop("sample_log_IC must be a matrix")
-  }
+  # design_df (will be matched to input data when precision is fitted
   
-  # Setup reference abundance
-  if(is.null(reference_log_IC)){
-    warning("reference abundances (reference_log_IC) were not found\neach peptide will be compared to the row median")
+  if(class(design_df) != "data.frame"){
     
-    reference_log_IC = matrix(apply(sample_log_IC, 1, median, na.rm = T), nrow = nrow(sample_log_IC), ncol = ncol(sample_log_IC))
-    
-  }else{
-    
-    if(class(reference_log_IC) != "matrix"){
-      stop("reference_log_IC, when provided, must be a matrix")
-    }
-    
-    if(!all(dim(sample_log_IC) == dim(reference_log_IC))){
-      stop("dimension of sample_log_IC and reference_log_IC differ")
-    }
-    
-    if(!all(rownames(sample_log_IC) == rownames(reference_log_IC))|!all(colnames(sample_log_IC) == colnames(reference_log_IC))){
-      stop("sample_log_IC and reference_log_IC row/column names do not match")
-    }
-    
-  }
-  
-  # Setup equiv_species_mat
-  
-  if(is.null(equiv_species_mat)){
-    warning("equivalent species (equiv_species_mat; e.g. charge states, varible oxidation) not provided, all features will be analyzed independently")
-    
-    equiv_species_mat <- diag(1, ncol = nrow(sample_log_IC), nrow = nrow(sample_log_IC))
-    rownames(equiv_species_mat) <- colnames(equiv_species_mat) <- rownames(sample_log_IC)
-    equiv_species_mat <- Matrix(equiv_species_mat, doDiag = F)
-    
-  }else{
-    
-    if(!(class(equiv_species_mat) %in% c("matrix", "dgCMatrix"))){
-      stop("equiv_species_mat needs to be either a matrix or Matrix class")
-    }
-    
-    if(nrow(sample_log_IC) != nrow(equiv_species_mat)){
-      stop("sample_log_IC and equiv_species_mat must have the same number of rows")
-    }
-    
-    if(!all(rownames(sample_log_IC) == rownames(equiv_species_mat))){
-     stop("sample_log_IC and equiv_species_mat rownames differ")
-    }
-    
-    if(class(equiv_species_mat) != "dgCMatrix"){
-      equiv_species_mat <- Matrix(equiv_species_mat)
-    }
-    
-  }
-  
-  # Setup mapping_mat
-  
-  if(is.null(mapping_mat)){
-  
-    warning("mapping of peptides to protein (mapping_mat) not provided, only peptide-level analysis will be possible")
-    
-    mapping_mat <- diag(1, ncol = ncol(equiv_species_mat), nrow = ncol(equiv_species_mat))
-    rownames(mapping_mat) <- colnames(mapping_mat) <- colnames(equiv_species_mat)
-    mapping_mat <- Matrix(mapping_mat, doDiag = F)
-    
-  }else{
-    
-    if(!(class(mapping_mat) %in% c("matrix", "dgCMatrix"))){
-      stop("mapping_mat needs to be either a matrix or Matrix class")
-    }
-    
-    if(ncol(equiv_species_mat) != nrow(mapping_mat)){
-      stop("equiv_species_mat column # must equal mapping_mat row #")
-    }
-    
-    if(!all(colnames(equiv_species_mat) == rownames(mapping_mat))){
-     stop("equiv_species_mat column names, must equal mapping_mat rownames")
-    }
-    
-    if(class(mapping_mat) != "dgCMatrix"){
-      mapping_mat <- Matrix(mapping_mat)
-    }
+   stop("design_df class must be a data.frame") 
   
   }
   
-  # Setup power_surrogate
+  # id_column
   
-  if(is.null(power_surrogate)){
+  if(class(id_column) != "character" | length(id_column) != 1){
+    
+    stop("a single id_column (character) must be supplied")
+    
+  }
+  
+  # fixed_effects
+  
+  if(class(fixed_effects) != "character" | length(id_column) == 0){
+    
+    stop("fixed_effects must be provided, if none are desired, add an intercept")
+    
+  }
+  
+  # random_effects
+  
+  if(!(class(random_effects) %in% c("character", "NULL"))){
+    
+    stop("random_effects when desired must be a character vector")
+    
+  }
+  
+  # check for valid matches
+  
+  if(!all(c(id_column, fixed_effects, random_effects) %in% colnames(design_df))){
    
-    warning("no power surrogate provided, only peptide-specific variances will be used")
-  
-  }else{
+    stop("id column, fixed effects and ranodm effects (when provided) must match columns of design_df")
     
-    if(class(power_surrogate) != "matrix"){
-      stop("power_surrogate must be a matrix")
-    }
-    
-    if(!all(dim(sample_log_IC) == dim(power_surrogate))){
-      stop("sample_log_IC and power_surrogate must have the same dimensions")
-    }
-    
-    if(!all(rownames(sample_log_IC) == rownames(power_surrogate))|!all(colnames(sample_log_IC) == colnames(power_surrogate))){
-      stop("sample_log_IC and power_surrogate row/column names do not match")
-    }
-   
-  return_list <- list()  
-  return_list[["sample_log_IC"]] <- sample_log_IC
-  return_list[["reference_log_IC"]] <- reference_log_IC
-  return_list[["equiv_species_mat"]] <- equiv_species_mat
-  return_list[["mapping_mat"]] <- mapping_mat
-  return_list[["power_surrogate"]] <- power_surrogate
-  
-  return(return_list)
-  
   }
   
+  design_variables <- rbind(data.frame(effect = fixed_effects, type = "fixed"),
+                            data.frame(effect = random_effects, type = "random"))
+  
+  
+  design_list <- list()
+  design_list[["design_df"]] <- design_df[,colnames(design_df) %in% c(id_column, fixed_effects, random_effects)]
+  design_list[["design_variables"]] <- design_variables
+  design_list[["ID"]] <- id_column
+  
+  return(design_list)
+  
+}
 
 
 
-
-  
-
-
-}  
-  
-  list()
-  
-  
-  
-  
-  
-  
-  }
-  
-  
-design_setup <- function(
-
-  require(lme4)
-  
+input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, power_surrogate)
+design_list <- design_setup(design_df, id_column, fixed_effects, random_effects)
 
 
-
-fit_sample_precision <- function(designMat, logAbund, powerSurr){
+fit_sample_precision <- function(input_data, design_list){
   
-# design matrix : m samples x k fixed and random levels
-# log abundance : n peptides x m samples
-# power surrogate : n peptides x m samples
-
+  
+  
+  # design matrix : m samples x k fixed and random levels
+  # log abundance : n peptides x m samples
+  # power surrogate : n peptides x m samples
+  
   # check compatibility of data and design
   
+  if(!(all(colnames(input_data[["sample_log_IC"]]) == design_list[["design_df"]][,colnames(design_list[["design_df"]]) == design_list[["ID"]]]))){
+    stop("input_data and design_list samples do not match")
+  }
+  
+  # fit model
+  
+  
+  # extract residuals
+  
+  # fit residuals versus power surrogate
+  
+  
+  
+  
   
   
   }
 
-
-
-
-
-
-### normalize columns - using same method as for metabolomics
-
-row.median <- apply(PepChargeMatrix, 1, median, na.rm = TRUE)
-scaling.factors <- rep(NA, ncol(PepChargeMatrix))
-for (j in 1:ncol(PepChargeMatrix)){
-  scaling.factors[j] <- median(row.median[!is.na(PepChargeMatrix[,j])]/PepChargeMatrix[,j][!is.na(PepChargeMatrix[,j])])
-}
-qplot(log2(scaling.factors))
-
-fossMat_norm <- t(t(PepChargeMatrix) * scaling.factors)
-lfossMat_norm <- log2(fossMat_norm)
-
-
-
-### generate a pearson correlation matrix
-
-sampleCorr <- cor(lfossMat_norm, use = "pairwise.complete.obs")
-pdf(file = "Figures/allRepCorr.pdf", width = 16, height = 16)
-heatmap.2(sampleCorr, trace = "none", col = blue2yellow(100), symm = TRUE)
-dev.off()
-
-
-
-# determine variance between pairs of biological replicates, pooling technical replicates.
-
-n_c <- ncol(lfossMat_norm)
-n_p <- nrow(lfossMat_norm)
-
-
-#pool tech replicates
-tech_pool_lIC <- matrix(NA, nrow = n_p, ncol = n_c/2)
-rownames(tech_pool_lIC) <- rownames(lfossMat_norm); colnames(tech_pool_lIC) <- unique(condMat$bioRep)
-
-tech_pool_SN <- tech_pool_rawlIC <- tech_pool_lIC
-
-for(j in 1:(n_c/2)){
-  
-  nvalid <- rowSums(!is.na(lfossMat_norm[,condMat$bioRep == colnames(tech_pool_lIC)[j]]))
-  # average logIC
-  tech_pool_lIC[nvalid != 0,j] <- apply(lfossMat_norm[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]], 1, mean, na.rm = TRUE)
-  # combined square coefficients of variation and convert back to SN
-  tech_pool_SN[nvalid != 0,j] <- nvalid[nvalid != 0]/sqrt(rowSums((1 / PepChargeSN[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]])^2, na.rm = T))
-  # raw average logIC
-  tech_pool_rawlIC[nvalid != 0,j] <- apply(log2(PepChargeMatrix[nvalid != 0, condMat$bioRep == colnames(tech_pool_lIC)[j]]), 1, mean, na.rm = TRUE)
-  
-  }
-
-
-# compare bioreplicates
-bio_pool_lIC <- matrix(NA, nrow = n_p, ncol = length(unique(condMat$segregant)))
-rownames(bio_pool_lIC) <- rownames(lfossMat_norm); colnames(bio_pool_lIC) <- unique(condMat$segregant)
-
-bio_pool_lSN <- bio_pool_rawlIC <- bio_pool_lIC
-
-var_pred_stack <- NULL
-
-for(j in 1:ncol(bio_pool_lIC)){
-  index_match <- colnames(tech_pool_lIC) %in% condMat$bioRep[condMat$segregant == colnames(bio_pool_lIC)[j]]
-  nvalid <- rowSums(!is.na(tech_pool_lIC[,index_match]))
-  
-  # point estimate
-  bio_pool_lIC[nvalid != 0,j] <- apply(tech_pool_lIC[nvalid != 0, index_match], 1, mean, na.rm = T)
-  # combined square coefficients of variation and convert back to SN
-  bio_pool_lSN[nvalid != 0,j] <- log2(nvalid[nvalid != 0]/sqrt(rowSums((1 / tech_pool_SN[nvalid != 0, index_match])^2, na.rm = T)))
-  bio_pool_rawlIC[nvalid != 0,j] <- apply(tech_pool_rawlIC[nvalid != 0, index_match], 1, mean, na.rm = T)
-  
-  var_pred_stack <- rbind(var_pred_stack, data.frame(resid = tech_pool_lIC[nvalid == 2, index_match][,1] - bio_pool_lIC[nvalid == 2, j], SD = apply(tech_pool_rawlIC[nvalid == 2, index_match], 1, sd), lSN = bio_pool_lSN[nvalid == 2, j], lIC = bio_pool_rawlIC[nvalid == 2,j]))
-  
-  }
 
 
 ### MA plot by lIC and lSN ###
