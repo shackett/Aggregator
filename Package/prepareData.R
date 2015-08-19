@@ -141,6 +141,14 @@ design_list <- design_setup(design_df, id_column, fixed_effects, random_effects)
 
 fit_sample_precision <- function(input_data, design_list){
   
+  require(dplyr)
+  require(broom)
+  
+  # Increasing generality
+  # switch from peptide -> feature
+  # allow for the input of a general model
+  
+  
   
   
   # design matrix : m samples x k fixed and random levels
@@ -155,6 +163,114 @@ fit_sample_precision <- function(input_data, design_list){
   
   # fit model
   
+  design_mat <- design_list[["design_df"]]
+  design_mat <- design_mat %>% mutate(bioR = paste(segregant, bioR, sep = "-"))
+  colnames(design_mat)[colnames(design_mat) == "newName"] <- "sample"
+  
+  # Convert the matrix of feature relative abundances to a tall data.frame/tbl_df
+  
+  tidy_input <- t(input_data[["sample_log_RA"]]) %>% as.data.frame() %>%
+    mutate(sample = rownames(.)) %>% left_join(design_mat, by = "sample") %>% 
+    tbl_df() %>% gather(key = peptide, RA, -sample, -segregant, -bioR, convert = T)
+  
+  # Add on the power_surrogate (when provided)
+  
+  if(!is.null(input_data[["power_surrogate"]])){
+    
+    tidy_PS <- t(input_data[["power_surrogate"]]) %>% as.data.frame() %>% 
+      mutate(sample = rownames(.)) %>% tbl_df() %>% gather(key = peptide, PS, -sample)
+    
+    # Based on previously validated shared dimensions and row/column names of the sample_log_RA and power_surrogate
+    # matrix, tidy_PS should be aligned to tidy_input - check a few random rows just in case
+    
+    test_rows <- sample(1:nrow(tidy_input), 10)
+    if(!all(tidy_input[test_rows, c('sample', 'peptide')] == tidy_PS[test_rows, c('sample', 'peptide')])){
+      stop("sample_log_RA and power_surrogate are misaligned!")
+    }
+  
+    tidy_input <- cbind(tidy_input, tidy_PS %>% dplyr::select(PS))
+    
+  }
+  
+  
+  
+  
+  # filter low-coverage peptides
+  
+  peptide_co <- 0.3
+  
+  tidy_input <- tidy_input %>% filter(!is.na(RA)) %>% group_by(peptide) %>%
+    mutate(n_sample = n()/nrow(design_mat)) %>% filter(n_sample >= peptide_co) %>%
+    group_by(peptide, bioR) %>% mutate(Reps = n())
+  
+  # use samples with technical replication
+  
+  # initial power surrogate dependent precision
+  # peptide precision
+  
+  tidy_input <- tidy_input %>% mutate(psdp = 1, pp = 1) %>% group_by(peptide) %>% tbl_df()
+  
+  resid_and_rse = function(fit){
+    output = data.frame(residual = fit$resid, rse = sqrt(deviance(fit)/df.residual(fit)))
+    return(output)
+  }
+  
+  
+  
+  continue = T
+  while(continue){
+    
+    # perform a peptide-wise weighted regression (using empirical weights governed by power surrogate)
+    # perform a point estimate or conditions or biological replicates (when technical replicates are
+    # availaable) - calculate residuals
+    
+    tidy_input <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:100])
+    
+    reg_model <- "RA ~ 0 + segregant + bioR"
+    
+    fit_model <- tidy_input %>% do(resid_and_rse(lm(data = ., formula = reg_model, weights = psdp*pp)))
+    
+    tidy_input <- cbind(tidy_input, fit_model)
+    
+    tidy_input <- tidy_input %>% mutate(inf_std_resid = residual * sqrt(Reps / (Reps - 1)) / rse)
+    
+    # inflate residuals to account for variable fitting and then normalize w.r.t. average
+    # residual standard error for the peptide so that across peptide analysis can be done
+    
+    
+    
+    
+
+fit_model <- tidy_input %>% do(augment(lm(data = ., formula = reg_model, weights = psdp*pp)))
+
+tidy_input_resids <- tidy_input %>% ungroup() %>% mutate(residual = fit_model$.resid) %>%
+  filter(Reps > 1)  
+
+# fit peptide-wise pp | psdp, residuals
+
+# across genes fit fsdp | pp, residuals
+
+# iterate
+
+# if biological replicates exist, calculate variance over replicates to add to technical variance
+
+
+
+
+
+  }
+  
+  tidy_input %>% group_by(peptide) %>%
+    lm(data = ., formula = "RA ~ 0 + segregant + bioR")
+  
+  
+  
+  
+  one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
+  lm_fit <- lm(data = one_peptide, formula = "RA ~ 0 + segregant + bioR")
+  
+  
+  tidy_input %>% lmer(data = ., formula = "
   
   # extract residuals
   
