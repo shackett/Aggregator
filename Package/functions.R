@@ -165,4 +165,131 @@ data_setup <- function(sample_log_IC = logIC, reference_log_IC = NULL, equiv_spe
 
 
 
+variance_smoother <- function(replicated_subet){
+  
+  require(ggplot2)
+  require(grid)
+  
+  # fit a smoother across squared residuals versus power surrogate
+  
+  if(nrow(replicated_subet) > 500*20){
+    nbins <- floor(nrow(replicated_subet) / 500)
+    binsize <- 500
+  }else if(nrow(replicated_subet) > 100*20){
+    nbins <- floor(nrow(replicated_subet) / 100)
+    binsize <- 100
+  }else{
+    warning("< 2000 measurements - Too little data to reliably estimate relationship between variance and power surrogate")
+    # return a flat line
+  }
+  
+  #  nrow(replicated_subet) == nbins * binsize + nrow(replicated_subet) %% binsize
+  
+  bin = c(rep(c(1:(nbins - nrow(replicated_subet) %% binsize)), each = binsize),
+          rep(c(((nbins - nrow(replicated_subet) %% binsize)+1) : nbins), each = binsize+1))
+  
+  if(!(length(bin) == nrow(replicated_subet))){
+    stop("length of bin assignment vector differs from number of measurements") 
+  }
+  
+  replicated_subet <- replicated_subet %>% arrange(PS) %>% mutate(bin = bin)
+  
+  variance_PS_rel <- replicated_subet %>% group_by(bin) %>% dplyr::summarize(variance = mean(inf_std_resid^2), PS = mean(PS))
+  
+  var_spline <- smooth.spline(y = variance_PS_rel$variance, x = variance_PS_rel$PS, df = 11)
+  
+  return_list <- list()
+  # replicated_subet <- replicated_subet %>% mutate(psdp = predict(var_spline, x = PS)$y^-1)
+  return_list[["spline"]] <- var_spline
+  
+  # summary plots
+  
+  # Variance binned by power surrogate fitted versus power surrogate
+  
+  #variance_PS_rel <- variance_PS_rel %>% mutate(variance_fitted = predict(var_spline)$y) 
+  #return_list[["plots"]][["spline variance versus PS"]] <- ggplot(variance_PS_rel, aes(x = PS)) + geom_point(aes(y = variance)) + geom_line(aes(y = variance_fitted), color = "RED", size = 2)
+  
+  # MA plot for all data - residual versus power surrogate
+  
+  #hex_theme <- theme(text = element_text(size = 23, face = "bold"), title = element_text(size = 25, face = "bold"), panel.background = element_rect(fill = "aliceblue"), 
+  #                   legend.position = "top", strip.background = element_rect(fill = "cornflowerblue"), strip.text = element_text(color = "cornsilk"), panel.grid.minor = element_blank(), 
+  #                   panel.grid.major = element_blank(), axis.line = element_blank(), legend.key.width = unit(6, "line")) 
+  
+  #ggplot(replicated_subet, aes(x = PS, y = residual)) + geom_hex(bins = 200) + scale_fill_gradient(name = "Counts", low = "black", high = "red", trans = "log")  + hex_theme
+  #ggplot(replicated_subet, aes(x = bin, y = residual)) + geom_hex(bins = 200) + scale_fill_gradientn(name = "Counts", colours = rainbow(7), trans = "log") + hex_theme
+  #ggplot(replicated_subet, aes(x = bin, y = inf_std_resid^2)) + geom_hex(bins = 200) + scale_fill_gradient(name = "Counts", low = "black", high = "red", trans = "log") + hex_theme
+  
+  return(return_list)
+  
+}
+
+
+
+resid_and_rse = function(fit){
+  if(class(fit) == "lm"){
+    output = data.frame(residual = fit$resid, rse = sqrt(deviance(fit)/df.residual(fit)))
+  }else if(class(fit) == "lmerMod"){
+    output = data.frame(residual = residuals(fit), rse = sigma(fit))
+  }else{
+    stop("unsupported model class, only lm and lme4 models are currently available") 
+  }
+  return(output)
+}
+
+test_normality <- function(fit_model){
+  
+  studentized_resids <- fit_model %>% filter(Reps > 1) %>% mutate(inf_psdp_resid = residual * sqrt(Reps / (Reps - 1)) * sqrt(precision)) %>%
+    dplyr::select(peptide, bioR, Reps, inf_psdp_resid, inf_std_resid)
+  
+  # If only two replicates of a level are present, take a random one (since two replicates will be symmetrical)
+  
+  studentized_resids <- studentized_resids %>% group_by(peptide, bioR) %>% mutate(random_rep = 1:n() == sample(1:n(), 1)) %>%
+    filter(random_rep | Reps > 2) %>% dplyr::select(-random_rep)
+  
+  # This selection will distort the residual from N(0,1) so restandardize
+  
+  studentized_resids <- studentized_resids %>% group_by(peptide) %>% mutate(inf_psdp_resid = (inf_psdp_resid - mean(inf_psdp_resid))/sd(inf_psdp_resid),
+                                                                            inf_std_resid = (inf_std_resid - mean(inf_std_resid))/sd(inf_std_resid))
+  
+  # devations form log-normality of residuals are primarily due to excess kurtosis
+  # 
+  library(moments)
+  
+  # look at the influence of removing residuals versus average kurtosis and normality of residuals
+  residual_fraction_removed <- c(0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.04)
+  
+  psdp_order <- studentized_resids %>% ungroup() %>% arrange(desc(abs(inf_psdp_resid)))
+  std_order <- studentized_resids %>% ungroup() %>% arrange(desc(abs(inf_std_resid)))
+  
+  for(a_frac in residual_fraction_removed){
+  
+  filtered_entries <- 1:floor(a_frac*nrow(psdp_order))
+  if(0 %in% filtered_entries){filtered_entries <- c()}  
+  
+  psdp_filter <- psdp_order %>% slice(-filtered_entries) %>% group_by(peptide) %>%
+    mutate(inf_psdp_resid = (inf_psdp_resid-mean(inf_psdp_resid))/sd(inf_psdp_resid)) %>% 
+    dplyr::summarize(kurtosis.psdp = kurtosis(inf_psdp_resid),
+                     ks.psdp = ks.test(inf_std_resid, "pnorm")$p)
+  
+  hist(psdp_filter$ks.kurtosis)
+  
+  
+  
+  
+  }
+  
+  
+  kurtosis <- studentized_resids %>% group_by(peptide) %>% dplyr::summarize(kurtosis.psdp = kurtosis(inf_psdp_resid),
+                                                                                 kurtosis.std = kurtosis(inf_std_resid))
+  
+  hist(skew_kurtosis$kurtosis.psdp, breaks = 50)
+  hist(skew_kurtosis$kurtosis.std, breaks = 50)
+  
+  ks_pvalues <- studentized_resids %>% group_by(peptide) %>% dplyr::summarize(ks.psdp = ks.test(inf_psdp_resid, "pnorm")$p,
+                                                                              ks.std = ks.test(inf_std_resid, "pnorm")$p)
+  
+  return(ks_pvalues)
+  
+}
+
 

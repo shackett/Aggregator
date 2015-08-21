@@ -4,6 +4,8 @@ library(dplyr)
 library(tidyr)
 library(data.table)
 
+source("functions.R")
+
 #### Foss2007: Construct experimental design from header ####
 
 fossHeader <- read.table("Data//Foss/Foss2007_peptides.txt", nrows = 1)
@@ -136,13 +138,26 @@ design_setup <- function(design_df, id_column, fixed_effects, random_effects = N
 
 
 input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, power_surrogate)
+
+input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, sample_log_IC)
+
 design_list <- design_setup(design_df, id_column, fixed_effects, random_effects)
+
+
+
+
+
+
+
+
+
+
+
 
 
 fit_sample_precision <- function(input_data, design_list){
   
   require(dplyr)
-  require(broom)
   
   # Increasing generality
   # switch from peptide -> feature
@@ -192,9 +207,6 @@ fit_sample_precision <- function(input_data, design_list){
     
   }
   
-  
-  
-  
   # filter low-coverage peptides
   
   peptide_co <- 0.3
@@ -203,62 +215,105 @@ fit_sample_precision <- function(input_data, design_list){
     mutate(n_sample = n()/nrow(design_mat)) %>% filter(n_sample >= peptide_co) %>%
     group_by(peptide, bioR) %>% mutate(Reps = n())
   
+  # test alternative parametric models
+  
+  #tidy_input <- tidy_input %>% filter(Reps >= 2)
+  
+  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3") %>% group_by(peptide)
+  
+  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
+  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
+  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
+  
+  #model1 <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
+  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
+  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
+  
+  #library(MASS)
+  #model4 <- glm.nb(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
+  
   # use samples with technical replication
   
   # initial power surrogate dependent precision
   # peptide precision
   
-  tidy_input <- tidy_input %>% mutate(psdp = 1, pp = 1) %>% group_by(peptide) %>% tbl_df()
-  
-  resid_and_rse = function(fit){
-    output = data.frame(residual = fit$resid, rse = sqrt(deviance(fit)/df.residual(fit)))
-    return(output)
-  }
-  
-  
+  tidy_input <- tidy_input %>% mutate(psdp = 1, pp = 1, precision = 1) %>% group_by(peptide)
   
   continue = T
+  steps = 0
+  track_normality <- NULL
+  
   while(continue){
     
     # perform a peptide-wise weighted regression (using empirical weights governed by power surrogate)
     # perform a point estimate or conditions or biological replicates (when technical replicates are
     # availaable) - calculate residuals
     
-    tidy_input <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:100])
+    # tidy_input <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:100])
+    
+    # tidy_subset <- tidy_input %>% filter(peptide == unique(tidy_input$peptide)[1])
+    
+    #fit_lmer <- lmer(data = tidy_subset, formula = "RA ~ 0 + segregant + (1|bioR)")
+    # fitting residuals about the mean while accounting for replicate effects
+    #fit_lm <- lm(data = tidy_subset, formula = "RA ~ 0 + segregant + bioR")
+    # fitting residuals about the mean of biological replicates
     
     reg_model <- "RA ~ 0 + segregant + bioR"
     
-    fit_model <- tidy_input %>% do(resid_and_rse(lm(data = ., formula = reg_model, weights = psdp*pp)))
+    # fit the provided model to each feature, extract residuals and residual standard error [sqrt(deviance/residual d.o.f.)]
     
-    tidy_input <- cbind(tidy_input, fit_model)
+    fit_model <- cbind(tidy_input, tidy_input %>% do(resid_and_rse(lm(data = ., formula = reg_model, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
     
-    tidy_input <- tidy_input %>% mutate(inf_std_resid = residual * sqrt(Reps / (Reps - 1)) / rse)
+    fit_model <- cbind(tidy_input, tidy_input %>% do(resid_and_rse(lmer(data = ., formula = "RA ~ 0 + segregant + (1|bioR)", weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+    
+    #a_peptide <- tidy_input %>% filter(peptide == "AVQYLHEIKDSVVAAFQWATK.4")
+    #a_fit <- lmer(data = a_peptide, formula = "RA ~ 0 + segregant + (1|bioR)")
+    #a_fit2 <- lm(data = a_peptide, formula = "RA ~ 0 + segregant + bioR")
     
     # inflate residuals to account for variable fitting and then normalize w.r.t. average
     # residual standard error for the peptide so that across peptide analysis can be done
     
+    fit_model <- fit_model %>% mutate(inf_std_resid = residual * sqrt(Reps / (Reps - 1)) / rse)
     
+    if(is.null(input_data[["power_surrogate"]])){
+      
+      # if a power_surrogate does not exist then only consider peptide-specific variance tacked onto
+      # variance of random effects (when present)
+      
+      next
+    }
     
+    replicated_subet <- fit_model %>% filter(Reps > 1, !is.na(PS))
     
-
-fit_model <- tidy_input %>% do(augment(lm(data = ., formula = reg_model, weights = psdp*pp)))
-
-tidy_input_resids <- tidy_input %>% ungroup() %>% mutate(residual = fit_model$.resid) %>%
-  filter(Reps > 1)  
-
-# fit peptide-wise pp | psdp, residuals
-
-# across genes fit fsdp | pp, residuals
-
-# iterate
-
-# if biological replicates exist, calculate variance over replicates to add to technical variance
-
-
-
-
-
+    # across genes fit fsdp | pp, residuals    
+    fit_rsdp <- variance_smoother(replicated_subet) 
+    
+    # update peptide precision and power-surrogate dependent precision
+    fit_model <- fit_model %>% mutate(pp = (1/rse)^2,
+                                      psdp = predict(fit_rsdp[["spline"]], x = PS)$y^-1,
+                                      precision = pp*psdp)
+    
+    # gauge log-normality of residuals with and without correction for power surrogate
+    
+    normality_test <- test_normality(fit_model)
+    
+    # Assess convergence in pi_0
+    
+    steps = steps +1
+    track_normality <- rbind(track_normality, data.frame(steps, ks.psdp = qvalue(normality_test$ks.psdp)$pi0, ks.std = qvalue(normality_test$ks.std)$pi0))
+    
+    if(steps > 10){
+      continue = F
+    }
+    
   }
+
+  
+  # if biological replicates exist, calculate variance over replicates to add to technical variance
+
+
+  
+  
   
   tidy_input %>% group_by(peptide) %>%
     lm(data = ., formula = "RA ~ 0 + segregant + bioR")
