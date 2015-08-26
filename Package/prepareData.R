@@ -47,6 +47,8 @@ load("Data//Foss/20130602Foss2007ProtPepMatrices.Rdata")
 condMat <- condMat[chmatch(colnames(PepChargeMatrix), condMat$runNum),]
 colnames(PepChargeMatrix) <- condMat$newName
 colnames(PepChargeSN) <- condMat$newName
+condMat$bioR <- paste(condMat$segregant, condMat$bioR, sep = "-")
+rownames(condMat) <- NULL
 
 # median polish of columns
   
@@ -60,89 +62,221 @@ equiv_species_mat <- as.matrix(make_equiv_species_mat[,-1])
 rownames(equiv_species_mat) <- make_equiv_species_mat[,'peptide']
 
 mapping_mat = t(ProtPepMatrix)
-power_surrogate = log2(PepChargeMatrix)
+#power_surrogate = log2(PepChargeMatrix)
 power_surrogate = log2(PepChargeSN)
 
-input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, power_surrogate)
 
-
-rownames(design_df) <- NULL
 design_df <- condMat
 id_column = "newName"
-fixed_effects = "segregant"
-random_effects = "bioR"
+model = 
+#model = ("~ 0 + segregant + bioR")
+model_effects = NULL
 
-design_setup <- function(design_df, id_column, fixed_effects, random_effects = NULL){
+
+input_data <- data_setup(sample_log_IC = sample_log_IC, equiv_species_mat = equiv_species_mat, mapping_mat = mapping_mat, power_surrogate = power_surrogate)
+#input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, sample_log_IC)
+
+design_list <- design_setup(design_df, "~ 0 + segregant + (1|bioR)", "newName")
+
+
+
+find_models_to_test <- function(model_type){
   
-  # specify columns with random and fixed effects
-  # We are seeking a point estimate of the categorical fixed effects
-  # Uncertainty about these effects is governed by biological and technical variance
-  # When both biological and technical replicates are present, biological replicates should be
-  # treated as random effects and technical replicates are not explicitely specified
+  all_models_list <- list(
   
-  ### check for valid arguements ###
+  # fixed effects models
+  list(model_type = "lm", model_name = "linear regression", fxn = "lm", transform = "", call_params = list(), package = "stats"),
+  list(model_type = "lm", model_name = "log-normal response, linear regression", fxn = "lm", transform = "log", call_params = list(), package = "stats"),
+  list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = "quasipoisson(link = `log`)"), package = "stats"),
+  list(model_type = "lm", model_name = "negative binomial regression", fxn = "glm.nb", transform = "", call_params = list(), package = "MASS"),
   
-  # design_df (will be matched to input data when precision is fitted
+  # random/mixed effect models
+  list(model_type = "lme4", model_name = "linear regression", fxn = "lmer", transform = "", call_params = list(REML = F), package = "lme4"),
+  list(model_type = "lme4", model_name = "log-normal response, linear regression", fxn = "lmer", transform = "log", call_params = list(REML = F), package = "lme4"),
+  list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = "poisson(link = `log`)", REML = F), package = "lme4")
   
-  if(class(design_df) != "data.frame"){
-    
-   stop("design_df class must be a data.frame") 
+  )
   
+  tested_models <- all_models_list[sapply(all_models_list, function(x){x$model_type}) == get("model_type")]
+  if(nrow(tested_models) == 0){
+   stop("No models found corresponding to model_type")
   }
   
-  # id_column
+  cat(paste("comparing alternative models:\n-", paste(tested_models$model_name, collapse = "\n- ")))
   
-  if(class(id_column) != "character" | length(id_column) != 1){
+  return(tested_models)
+  
+  }
+
+
+
+# compare alternative types of models
+
+test_alternative_regression_families <- function(input_data, design_list){
+  
+  # Use AIC to evaluate the relative merits of alternative homoschedastic parameteric models
+  
+  # If random effects are present, test:
+  # 1) normal
+  # 2) log-normal
+  # 3) poisson
+  # If only fixed effects are included, also test:
+  # 4) negative binomial
+  # 5) quasi-poisson (rather than poisson)
+  
+  # check compatibility of data and design
+  
+  if(!(all(colnames(input_data[["sample_log_IC"]]) == design_list[["design_df"]][,colnames(design_list[["design_df"]]) == design_list[["ID"]]]))){
+    stop("input_data and design_list samples do not match")
+  }
+  
+  # fit model
+  model_formula <- paste("RA", design_list[["model_formula"]])
+  model_type <- ifelse(grepl("|", design_list[["model_formula"]]), "lme4", "lm")
+  
+  model_description = c('lme4' = 'linear mixed-effects model', 'lm' = 'linear fixed effects model')
+  # specify models tested based on regression design
+  
+  cat(paste("testing alternative models: RA",  design_list[["model_formula"]],
+              "using a", model_description[model_type]))
+  
+  models_to_test <- find_models_to_test(model_type)
+  
+  # Convert the matrix of feature relative abundances to a tall data.frame/tbl_df
+  
+  tidy_input <- t(input_data[["sample_log_IC"]]) %>% as.data.frame() %>%
+    mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+    left_join(design_list[["design_df"]], by = design_list[["ID"]]) %>% 
+    tbl_df() %>% gather_(key_col = "peptide", value_col = "sample_log_IC", gather_cols = rownames(input_data[["sample_log_IC"]]), convert = T)
+  
+  if(input_data[["reference_present"]]){
     
-    stop("a single id_column (character) must be supplied")
+    tidy_ref <- t(input_data[["reference_log_IC"]]) %>% as.data.frame() %>% 
+      mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+      tbl_df() %>% gather_(key_col = "peptide", value_col = "reference_log_IC", gather_cols = rownames(input_data[["reference_log_IC"]]), convert = T)
+    
+    # Assert (and test!) that sample_log_IC and reference_log_IC are aligned
+    
+    test_rows <- sample(1:nrow(tidy_input), 10)
+    if(!all(tidy_input[test_rows, c(design_list[["ID"]], 'peptide')] == tidy_ref[test_rows, c(design_list[["ID"]], 'peptide')])){
+      stop("sample_log_IC and reference_log_IC are misaligned!")
+    }
+    
+    tidy_input <- bind_cols(tidy_input, tidy_ref %>% dplyr::select(reference_log_IC)) %>% tbl_df()
     
   }
   
-  # fixed_effects
+  # remove features with lots of missing data
   
-  if(class(fixed_effects) != "character" | length(id_column) == 0){
+  peptide_co <- 0.3
+  
+  if(input_data[["reference_present"]]){
     
-    stop("fixed_effects must be provided, if none are desired, add an intercept")
+    tidy_input <- tidy_input %>% filter(!is.na(sample_log_IC) & !is.na(reference_log_IC)) %>% group_by(peptide) %>%
+      mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
     
-  }
-  
-  # random_effects
-  
-  if(!(class(random_effects) %in% c("character", "NULL"))){
+  }else{
     
-    stop("random_effects when desired must be a character vector")
-    
-  }
-  
-  # check for valid matches
-  
-  if(!all(c(id_column, fixed_effects, random_effects) %in% colnames(design_df))){
-   
-    stop("id column, fixed effects and ranodm effects (when provided) must match columns of design_df")
+    tidy_input <- tidy_input %>% filter(!is.na(sample_log_IC)) %>% group_by(peptide) %>%
+      mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
     
   }
   
-  design_variables <- rbind(data.frame(effect = fixed_effects, type = "fixed"),
-                            data.frame(effect = random_effects, type = "random"))
+  # Test all desired models and extract feature-wise AIC
+  
+  for(model_row in 1:nrow(models_to_test)){
+    
+    
+    
+    
+    
+    
+  }
   
   
-  design_list <- list()
-  design_list[["design_df"]] <- design_df[,colnames(design_df) %in% c(id_column, fixed_effects, random_effects)]
-  design_list[["design_variables"]] <- design_variables
-  design_list[["ID"]] <- id_column
   
-  return(design_list)
+  tidy_input
   
-}
-
-
-
-input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, power_surrogate)
-
-input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, sample_log_IC)
-
-design_list <- design_setup(design_df, id_column, fixed_effects, random_effects)
-
+ 
+  
+  one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
+  five_peptides <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:5])
+  
+  
+  one_peptide
+  model_formula
+  a_model <- unlist(models_to_test[1,])
+  
+  # log or linear
+  mod_model <- ifelse(a_model['transform'] == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
+  
+  model_fit <- lm(data = one_peptide, formula = "sample_log_IC ~ 0 + segregant", REML = F)
+  
+  # call appropriate function and specify optional parameters
+  do.call(get(a_model['fxn']), list(data = one_peptide,
+                                    formula = mod_model,
+                                    REML = F))
+  
+  model_fit <- get(a_model['fxn'])(data = one_peptide, formula = mod_model, list(REML = "F"))
+  model_fit <- get(a_model['fxn'])(data = one_peptide, formula = mod_model, REML = F)
+  
+  AIC(logLik(model_fit))
+  
+  summary(model_fit)$logLik
+  
+  
+  get(a_model['fxn'])(data = one_peptide, formula = mod_model)
+  
+  
+  
+  
+  eval(parse(a_model['model_type']))(data = one_peptide, formula = mod_model)
+  
+  eval(paste0("lmer", "(data = one_peptide, formula = mod_model)"))
+  
+  
+  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
+  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
+  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
+  
+  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
+  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
+  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
+ 
+  
+  
+  # check equivalence of logRA and log_sample w/ reference adjustment
+  
+  
+  
+  # Gene-wise comparison based on which model is best for each feature
+  # Overall model support from sum of AIC
+  
+  
+  
+  
+  
+  
+  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3") %>% group_by(peptide)
+  
+  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
+  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
+  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
+  
+  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
+  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
+  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
+  
+  #library(MASS)
+  #model4 <- glm.nb(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
+  
+  
+  
+  
+  
+  
+  
+  }
 
 
 
@@ -163,9 +297,6 @@ fit_sample_precision <- function(input_data, design_list){
   # switch from peptide -> feature
   # allow for the input of a general model
   
-  
-  
-  
   # design matrix : m samples x k fixed and random levels
   # log abundance : n peptides x m samples
   # power surrogate : n peptides x m samples
@@ -177,33 +308,37 @@ fit_sample_precision <- function(input_data, design_list){
   }
   
   # fit model
+  model_formula <- paste("RA", design_list[["model_formula"]])
+  model_type <- ifelse(grepl("|", design_list[["model_formula"]]), "lme4", "lm")
   
-  design_mat <- design_list[["design_df"]]
-  design_mat <- design_mat %>% mutate(bioR = paste(segregant, bioR, sep = "-"))
-  colnames(design_mat)[colnames(design_mat) == "newName"] <- "sample"
+  model_description = c('lme4' = 'linear mixed-effects model', 'lm' = 'linear fixed effects model')
+  print(paste("testing the model: logRA",  design_list[["model_formula"]],
+              "using a", model_description[model_type]))
   
   # Convert the matrix of feature relative abundances to a tall data.frame/tbl_df
   
   tidy_input <- t(input_data[["sample_log_RA"]]) %>% as.data.frame() %>%
-    mutate(sample = rownames(.)) %>% left_join(design_mat, by = "sample") %>% 
-    tbl_df() %>% gather(key = peptide, RA, -sample, -segregant, -bioR, convert = T)
+    mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+    left_join(design_list[["design_df"]], by = design_list[["ID"]]) %>% 
+    tbl_df() %>% gather_(key_col = "peptide", value_col = "RA", gather_cols = rownames(input_data[["sample_log_RA"]]), convert = T)
   
   # Add on the power_surrogate (when provided)
   
   if(!is.null(input_data[["power_surrogate"]])){
     
     tidy_PS <- t(input_data[["power_surrogate"]]) %>% as.data.frame() %>% 
-      mutate(sample = rownames(.)) %>% tbl_df() %>% gather(key = peptide, PS, -sample)
+      mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+      tbl_df() %>% gather_(key_col = "peptide", value_col = "PS", gather_cols = rownames(input_data[["power_surrogate"]]), convert = T)
     
     # Based on previously validated shared dimensions and row/column names of the sample_log_RA and power_surrogate
     # matrix, tidy_PS should be aligned to tidy_input - check a few random rows just in case
     
     test_rows <- sample(1:nrow(tidy_input), 10)
-    if(!all(tidy_input[test_rows, c('sample', 'peptide')] == tidy_PS[test_rows, c('sample', 'peptide')])){
+    if(!all(tidy_input[test_rows, c(design_list[["ID"]], 'peptide')] == tidy_PS[test_rows, c(design_list[["ID"]], 'peptide')])){
       stop("sample_log_RA and power_surrogate are misaligned!")
     }
-  
-    tidy_input <- cbind(tidy_input, tidy_PS %>% dplyr::select(PS))
+    
+    tidy_input <- bind_cols(tidy_input, tidy_PS %>% dplyr::select(PS)) %>% tbl_df()
     
   }
   
@@ -212,8 +347,7 @@ fit_sample_precision <- function(input_data, design_list){
   peptide_co <- 0.3
   
   tidy_input <- tidy_input %>% filter(!is.na(RA)) %>% group_by(peptide) %>%
-    mutate(n_sample = n()/nrow(design_mat)) %>% filter(n_sample >= peptide_co) %>%
-    group_by(peptide, bioR) %>% mutate(Reps = n())
+    mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
   
   # test alternative parametric models
   
@@ -225,7 +359,7 @@ fit_sample_precision <- function(input_data, design_list){
   #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
   #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
   
-  #model1 <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
+  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
   #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
   #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
   
@@ -243,6 +377,7 @@ fit_sample_precision <- function(input_data, design_list){
   steps = 0
   track_normality <- NULL
   
+  
   while(continue){
     
     # perform a peptide-wise weighted regression (using empirical weights governed by power surrogate)
@@ -258,13 +393,26 @@ fit_sample_precision <- function(input_data, design_list){
     #fit_lm <- lm(data = tidy_subset, formula = "RA ~ 0 + segregant + bioR")
     # fitting residuals about the mean of biological replicates
     
-    reg_model <- "RA ~ 0 + segregant + bioR"
+    # fit the provided model to each feature, extract residuals and residual standard error
     
-    # fit the provided model to each feature, extract residuals and residual standard error [sqrt(deviance/residual d.o.f.)]
-    
-    fit_model <- cbind(tidy_input, tidy_input %>% do(resid_and_rse(lm(data = ., formula = reg_model, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
-    
-    fit_model <- cbind(tidy_input, tidy_input %>% do(resid_and_rse(lmer(data = ., formula = "RA ~ 0 + segregant + (1|bioR)", weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+    if(steps == 0){
+      setup_regression <- tidy_input
+    }else{
+      setup_regression <- fit_model %>% select_(.dots = lapply(colnames(tidy_input), function(x){x}))
+    }
+   
+    if(model_type == "lme4"){
+      require(lme4)
+      
+      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_rse(lmer(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+      
+    }else if(model_type == "lm"){
+      
+      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_rse(lm(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+      
+    }else{
+      stop("unsupported model")
+    }
     
     #a_peptide <- tidy_input %>% filter(peptide == "AVQYLHEIKDSVVAAFQWATK.4")
     #a_fit <- lmer(data = a_peptide, formula = "RA ~ 0 + segregant + (1|bioR)")
@@ -273,7 +421,8 @@ fit_sample_precision <- function(input_data, design_list){
     # inflate residuals to account for variable fitting and then normalize w.r.t. average
     # residual standard error for the peptide so that across peptide analysis can be done
     
-    fit_model <- fit_model %>% mutate(inf_std_resid = residual * sqrt(Reps / (Reps - 1)) / rse)
+    fit_model <- fit_model %>% group_by(peptide) %>% mutate(pp = sd(residual * sqrt(psdp)) * rse/sd(residual),
+                                                            std_resid = residual * sqrt(pp))
     
     if(is.null(input_data[["power_surrogate"]])){
       
@@ -283,24 +432,25 @@ fit_sample_precision <- function(input_data, design_list){
       next
     }
     
-    replicated_subet <- fit_model %>% filter(Reps > 1, !is.na(PS))
+    #one_peptide <- fit_model %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
+    replicated_subet <- fit_model
+    # replicated_subet <- fit_model %>% filter(Reps > 1, !is.na(PS))
     
     # across genes fit fsdp | pp, residuals    
     fit_rsdp <- variance_smoother(replicated_subet) 
     
     # update peptide precision and power-surrogate dependent precision
-    fit_model <- fit_model %>% mutate(pp = (1/rse)^2,
-                                      psdp = predict(fit_rsdp[["spline"]], x = PS)$y^-1,
+    fit_model <- fit_model %>% mutate(psdp = predict(fit_rsdp[["spline"]], x = PS)$y^-1,
                                       precision = pp*psdp)
     
     # gauge log-normality of residuals with and without correction for power surrogate
     
-    normality_test <- test_normality(fit_model)
+    # normality_test <- test_normality(fit_model)
     
     # Assess convergence in pi_0
     
     steps = steps +1
-    track_normality <- rbind(track_normality, data.frame(steps, ks.psdp = qvalue(normality_test$ks.psdp)$pi0, ks.std = qvalue(normality_test$ks.std)$pi0))
+    #track_normality <- rbind(track_normality, data.frame(steps, ks.psdp = qvalue(normality_test$ks.psdp)$pi0, ks.std = qvalue(normality_test$ks.std)$pi0))
     
     if(steps > 10){
       continue = F

@@ -26,7 +26,7 @@ robust_median_polish <- function(log_IC){
 }
 
 
-data_setup <- function(sample_log_IC = logIC, reference_log_IC = NULL, equiv_species_mat = NULL, mapping_mat = NULL, power_surrogate = NULL){
+data_setup <- function(sample_log_IC, reference_log_IC = NULL, equiv_species_mat = NULL, mapping_mat = NULL, power_surrogate = NULL){
   
   require(Matrix)
   
@@ -45,11 +45,16 @@ data_setup <- function(sample_log_IC = logIC, reference_log_IC = NULL, equiv_spe
   
   # Setup reference abundance
   if(is.null(reference_log_IC)){
-    warning("reference abundances (reference_log_IC) were not found\neach peptide will be compared to the row median")
+    cat("Reference abundances (reference_log_IC) were not found\neach peptide will be compared to the row median")
     
+    reference_present = F
     reference_log_IC = matrix(apply(sample_log_IC, 1, median, na.rm = T), nrow = nrow(sample_log_IC), ncol = ncol(sample_log_IC))
+    rownames(reference_log_IC) <- rownames(sample_log_IC)
+    colnames(reference_log_IC) <- colnames(sample_log_IC)
     
   }else{
+    
+    reference_present = T
     
     if(class(reference_log_IC) != "matrix"){
       stop("reference_log_IC, when provided, must be a matrix")
@@ -152,6 +157,7 @@ data_setup <- function(sample_log_IC = logIC, reference_log_IC = NULL, equiv_spe
   return_list <- list()  
   return_list[["sample_log_IC"]] <- sample_log_IC
   return_list[["reference_log_IC"]] <- reference_log_IC
+  return_list[["reference_present"]] <- reference_present
   return_list[["sample_log_RA"]] <- sample_log_RA
   
   return_list[["equiv_species_mat"]] <- equiv_species_mat
@@ -162,6 +168,68 @@ data_setup <- function(sample_log_IC = logIC, reference_log_IC = NULL, equiv_spe
   
 }
   
+
+
+design_setup <- function(design_df, model, id_column, model_effects = NULL){
+  
+  # specify columns with random and fixed effects
+  # We are seeking a point estimate of the categorical fixed effects
+  # Uncertainty about these effects is governed by biological and technical variance
+  # When both biological and technical replicates are present, biological replicates should be
+  # treated as random effects and technical replicates are not explicitely specified
+  
+  ### check for valid arguements ###
+  
+  # design_df (will be matched to input data when precision is fitted
+  
+  if(class(design_df) != "data.frame"){
+    
+    stop("design_df class must be a data.frame") 
+    
+  }
+  
+  # model check
+  if(class(try(as.formula(model))) == "try-error"){
+   
+    stop("model is misspecified")
+    
+  }
+  
+  # id_column
+  
+  if(class(id_column) != "character" | length(id_column) != 1){
+    
+    stop("a single id_column (character) must be supplied")
+    
+  }
+  
+  # find all effects in the model
+  
+  if(is.null(model_effects)){
+    model_effects <- regmatches(model, gregexpr('[[:alnum:]]+', model))[[1]]
+    model_effects <- grep('^[[:digit:]]+$', model_effects, invert = T, value = T)
+    
+    print(paste("model effects are:", paste(model_effects, collapse = ", ")))
+  }
+  
+  # check for valid matches
+  
+  if(!all(c(id_column, model_effects) %in% colnames(design_df))){
+   
+    stop("id column and specified effects must match columns of design_df")
+    
+  }
+  
+  design_list <- list()
+  design_list[["model_formula"]] <- model
+  design_list[["design_df"]] <- design_df[,colnames(design_df) %in% c(id_column, model_effects)]
+  design_list[["ID"]] <- id_column
+  
+  return(design_list)
+  
+}
+
+
 
 
 
@@ -192,9 +260,9 @@ variance_smoother <- function(replicated_subet){
     stop("length of bin assignment vector differs from number of measurements") 
   }
   
-  replicated_subet <- replicated_subet %>% arrange(PS) %>% mutate(bin = bin)
+  replicated_subet <- replicated_subet %>% ungroup() %>% arrange(PS) %>% mutate(bin = bin)
   
-  variance_PS_rel <- replicated_subet %>% group_by(bin) %>% dplyr::summarize(variance = mean(inf_std_resid^2), PS = mean(PS))
+  variance_PS_rel <- replicated_subet %>% group_by(bin) %>% dplyr::summarize(variance = mean(std_resid^2), PS = mean(PS))
   
   var_spline <- smooth.spline(y = variance_PS_rel$variance, x = variance_PS_rel$PS, df = 11)
   
@@ -238,57 +306,65 @@ resid_and_rse = function(fit){
 
 test_normality <- function(fit_model){
   
-  studentized_resids <- fit_model %>% filter(Reps > 1) %>% mutate(inf_psdp_resid = residual * sqrt(Reps / (Reps - 1)) * sqrt(precision)) %>%
-    dplyr::select(peptide, bioR, Reps, inf_psdp_resid, inf_std_resid)
+  normalized_resids <- fit_model %>% mutate(psdp_resid = residual * sqrt(precision)) %>%
+    dplyr::select(peptide, psdp_resid, std_resid)
   
   # If only two replicates of a level are present, take a random one (since two replicates will be symmetrical)
   
-  studentized_resids <- studentized_resids %>% group_by(peptide, bioR) %>% mutate(random_rep = 1:n() == sample(1:n(), 1)) %>%
-    filter(random_rep | Reps > 2) %>% dplyr::select(-random_rep)
+  #studentized_resids <- studentized_resids %>% group_by(peptide, bioR) %>% mutate(random_rep = 1:n() == sample(1:n(), 1)) %>%
+  #  filter(random_rep | Reps > 2) %>% dplyr::select(-random_rep)
   
-  # This selection will distort the residual from N(0,1) so restandardize
+  # Standardize each peptides residuals
   
-  studentized_resids <- studentized_resids %>% group_by(peptide) %>% mutate(inf_psdp_resid = (inf_psdp_resid - mean(inf_psdp_resid))/sd(inf_psdp_resid),
-                                                                            inf_std_resid = (inf_std_resid - mean(inf_std_resid))/sd(inf_std_resid))
+  normalized_resids <- normalized_resids %>% group_by(peptide) %>% mutate(psdp_resid = (psdp_resid - mean(psdp_resid))/sd(psdp_resid),
+                                                                          std_resid = (std_resid - mean(std_resid))/sd(std_resid))
   
   # devations form log-normality of residuals are primarily due to excess kurtosis
-  # 
-  library(moments)
   
+  library(moments)
+  library(qvalue)
   # look at the influence of removing residuals versus average kurtosis and normality of residuals
   residual_fraction_removed <- c(0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.04)
   
-  psdp_order <- studentized_resids %>% ungroup() %>% arrange(desc(abs(inf_psdp_resid)))
-  std_order <- studentized_resids %>% ungroup() %>% arrange(desc(abs(inf_std_resid)))
+  psdp_order <- normalized_resids %>% ungroup() %>% arrange(desc(abs(psdp_resid)))
+  std_order <- normalized_resids %>% ungroup() %>% arrange(desc(abs(std_resid)))
   
+  normality_summary <- NULL
   for(a_frac in residual_fraction_removed){
-  
-  filtered_entries <- 1:floor(a_frac*nrow(psdp_order))
-  if(0 %in% filtered_entries){filtered_entries <- c()}  
-  
-  psdp_filter <- psdp_order %>% slice(-filtered_entries) %>% group_by(peptide) %>%
-    mutate(inf_psdp_resid = (inf_psdp_resid-mean(inf_psdp_resid))/sd(inf_psdp_resid)) %>% 
-    dplyr::summarize(kurtosis.psdp = kurtosis(inf_psdp_resid),
-                     ks.psdp = ks.test(inf_std_resid, "pnorm")$p)
-  
-  hist(psdp_filter$ks.kurtosis)
-  
-  
-  
-  
+    
+    filtered_entries <- 1:floor(a_frac*nrow(psdp_order))
+    if(0 %in% filtered_entries){filtered_entries <- NULL}  
+    
+    if(is.null(filtered_entries)){
+      psdp_filter <- psdp_order
+      std_filter <- std_order
+    }else{
+      psdp_filter <- psdp_order %>% slice(-filtered_entries)
+      std_filter <- std_order %>% slice(-filtered_entries)
+    }
+    
+    psdp_filter <- psdp_filter %>% group_by(peptide) %>%
+      mutate(psdp_resid = (psdp_resid-mean(psdp_resid))/sd(psdp_resid)) %>% 
+      dplyr::summarize(kurtosis.psdp = kurtosis(psdp_resid),
+                       ks.psdp = ks.test(std_resid, "pnorm")$p)
+    
+    psdp_summary <- psdp_filter %>% ungroup() %>% dplyr::summarize(kurtosis.psdp.avg = mean(kurtosis.psdp),
+                                                                   ks.psdp.pdist = qvalue(ks.psdp)$pi0)
+    
+    std_filter <- std_filter %>% group_by(peptide) %>%
+      mutate(std_resid = (std_resid-mean(std_resid))/sd(std_resid)) %>% 
+      dplyr::summarize(kurtosis.std = kurtosis(std_resid),
+                       ks.std = ks.test(std_resid, "pnorm")$p)
+    
+    std_summary <- std_filter %>% ungroup() %>% dplyr::summarize(kurtosis.std.avg = mean(kurtosis.std),
+                                                                 ks.std.pdist = qvalue(ks.std)$pi0)
+    
+    normality_summary <- rbind(normality_summary,
+                     data.frame(residual_fraction_removed = a_frac, psdp_summary, std_summary))
+    
   }
   
-  
-  kurtosis <- studentized_resids %>% group_by(peptide) %>% dplyr::summarize(kurtosis.psdp = kurtosis(inf_psdp_resid),
-                                                                                 kurtosis.std = kurtosis(inf_std_resid))
-  
-  hist(skew_kurtosis$kurtosis.psdp, breaks = 50)
-  hist(skew_kurtosis$kurtosis.std, breaks = 50)
-  
-  ks_pvalues <- studentized_resids %>% group_by(peptide) %>% dplyr::summarize(ks.psdp = ks.test(inf_psdp_resid, "pnorm")$p,
-                                                                              ks.std = ks.test(inf_std_resid, "pnorm")$p)
-  
-  return(ks_pvalues)
+  return(normality_summary)
   
 }
 
