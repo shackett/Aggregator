@@ -87,22 +87,22 @@ find_models_to_test <- function(model_type){
   # fixed effects models
   list(model_type = "lm", model_name = "linear regression", fxn = "lm", transform = "", call_params = list(), package = "stats"),
   list(model_type = "lm", model_name = "log-normal response, linear regression", fxn = "lm", transform = "log", call_params = list(), package = "stats"),
-  list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = "quasipoisson(link = `log`)"), package = "stats"),
+  list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = quasipoisson(link = "log")), package = "stats"),
   list(model_type = "lm", model_name = "negative binomial regression", fxn = "glm.nb", transform = "", call_params = list(), package = "MASS"),
   
   # random/mixed effect models
   list(model_type = "lme4", model_name = "linear regression", fxn = "lmer", transform = "", call_params = list(REML = F), package = "lme4"),
   list(model_type = "lme4", model_name = "log-normal response, linear regression", fxn = "lmer", transform = "log", call_params = list(REML = F), package = "lme4"),
-  list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = "poisson(link = `log`)", REML = F), package = "lme4")
+  list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = poisson(link = "log"), REML = F), package = "lme4")
   
   )
   
   tested_models <- all_models_list[sapply(all_models_list, function(x){x$model_type}) == get("model_type")]
-  if(nrow(tested_models) == 0){
+  if(length(tested_models) == 0){
    stop("No models found corresponding to model_type")
   }
   
-  cat(paste("comparing alternative models:\n-", paste(tested_models$model_name, collapse = "\n- ")))
+  cat(paste("comparing alternative models:\n-", paste(sapply(tested_models, function(x){x$model_name}), collapse = "\n- ")))
   
   return(tested_models)
   
@@ -113,6 +113,9 @@ find_models_to_test <- function(model_type){
 # compare alternative types of models
 
 test_alternative_regression_families <- function(input_data, design_list){
+  
+  require(dplyr)
+  require(lme4)
   
   # Use AIC to evaluate the relative merits of alternative homoschedastic parameteric models
   
@@ -184,55 +187,61 @@ test_alternative_regression_families <- function(input_data, design_list){
   
   # Test all desired models and extract feature-wise AIC
   
-  for(model_row in 1:nrow(models_to_test)){
+  model_AIC <- list()
+  for(model_row in 1:length(models_to_test)){
     
+    a_model <- models_to_test[[model_row]]
     
+    mod_model <- ifelse(a_model$transform == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
+    #gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model)
     
-    
-    
+    model_AIC[[model_row]] <- five_peptides %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model))) 
     
   }
   
+  do.call("rbind", model_AIC)
   
+  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
+  #five_peptides <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:5])
   
-  tidy_input
-  
- 
-  
-  one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
-  five_peptides <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:5])
-  
-  
-  one_peptide
-  model_formula
-  a_model <- unlist(models_to_test[1,])
-  
-  # log or linear
-  mod_model <- ifelse(a_model['transform'] == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
-  
-  model_fit <- lm(data = one_peptide, formula = "sample_log_IC ~ 0 + segregant", REML = F)
+  mod_model <- ifelse(a_model$transform == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
   
   # call appropriate function and specify optional parameters
-  do.call(get(a_model['fxn']), list(data = one_peptide,
-                                    formula = mod_model,
-                                    REML = F))
+  #model_fit <- do.call(get(a_model$fxn), list(data = one_peptide,
+  #                                            formula = mod_model,
+  #                                            unlist(a_model[["call_params"]])))
+  
+  #as.numeric(AIC(logLik(do.call(get(a_model$fxn), list(data = one_peptide,
+  #                                            formula = mod_model,
+  #                                            unlist(a_model[["call_params"]]))))))
+  
+  five_peptides %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model)))  
+  
+  
+  
+  
+  fit_AIC <- function(all_data, mod_model, a_model){
+    
+    data.frame(model = a_model$model_name,
+               AIC = do.call(get(a_model$fxn),
+                             append(list(data = all_data, formula = mod_model), a_model[["call_params"]])) %>%
+                 logLik() %>% AIC() %>% as.numeric())
+    
+    #data.frame(model = a_model$model_name,
+    #           AIC = do.call(get(a_model$fxn), list(data = all_data,
+    #                                                formula = mod_model,
+    #                                                c(a_model[["call_params"]]))) %>% logLik() %>% AIC() %>% as.numeric())
+    
+  }
   
   model_fit <- get(a_model['fxn'])(data = one_peptide, formula = mod_model, list(REML = "F"))
-  model_fit <- get(a_model['fxn'])(data = one_peptide, formula = mod_model, REML = F)
+  model_fit <- get(a_model$fxn)(data = one_peptide, formula = tmp_model, REML = F, family = poisson(link = `log`))
+  
+  tmp_model <- gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model)
   
   AIC(logLik(model_fit))
   
   summary(model_fit)$logLik
-  
-  
-  get(a_model['fxn'])(data = one_peptide, formula = mod_model)
-  
-  
-  
-  
-  eval(parse(a_model['model_type']))(data = one_peptide, formula = mod_model)
-  
-  eval(paste0("lmer", "(data = one_peptide, formula = mod_model)"))
   
   
   #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
