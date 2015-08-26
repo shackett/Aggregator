@@ -368,4 +368,17 @@ test_normality <- function(fit_model){
   
 }
 
+fit_AIC <- function(all_data, mod_model, a_model){
+    
+    data.frame(model = a_model$model_name,
+               AIC = do.call(get(a_model$fxn),
+                             append(list(data = all_data, formula = mod_model), a_model[["call_params"]])) %>%
+                 logLik() %>% AIC() %>% as.numeric())
+    
+    #data.frame(model = a_model$model_name,
+    #           AIC = do.call(get(a_model$fxn), list(data = all_data,
+    #                                                formula = mod_model,
+    #                                                c(a_model[["call_params"]]))) %>% logLik() %>% AIC() %>% as.numeric())
+    
+  }
 

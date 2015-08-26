@@ -76,9 +76,7 @@ model_effects = NULL
 input_data <- data_setup(sample_log_IC = sample_log_IC, equiv_species_mat = equiv_species_mat, mapping_mat = mapping_mat, power_surrogate = power_surrogate)
 #input_data <- data_setup(sample_log_IC, reference_log_IC, equiv_species_mat, mapping_mat, sample_log_IC)
 
-design_list <- design_setup(design_df, "~ 0 + segregant + (1|bioR)", "newName")
-
-
+# compare alternative types of models
 
 find_models_to_test <- function(model_type){
   
@@ -87,13 +85,13 @@ find_models_to_test <- function(model_type){
   # fixed effects models
   list(model_type = "lm", model_name = "linear regression", fxn = "lm", transform = "", call_params = list(), package = "stats"),
   list(model_type = "lm", model_name = "log-normal response, linear regression", fxn = "lm", transform = "log", call_params = list(), package = "stats"),
-  list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = quasipoisson(link = "log")), package = "stats"),
+  #list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = quasipoisson(link = "log")), package = "stats"),
   list(model_type = "lm", model_name = "negative binomial regression", fxn = "glm.nb", transform = "", call_params = list(), package = "MASS"),
   
   # random/mixed effect models
   list(model_type = "lme4", model_name = "linear regression", fxn = "lmer", transform = "", call_params = list(REML = F), package = "lme4"),
-  list(model_type = "lme4", model_name = "log-normal response, linear regression", fxn = "lmer", transform = "log", call_params = list(REML = F), package = "lme4"),
-  list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = poisson(link = "log"), REML = F), package = "lme4")
+  list(model_type = "lme4", model_name = "log-normal response, linear regression", fxn = "lmer", transform = "log", call_params = list(REML = F), package = "lme4")
+  #list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = poisson(link = "log")), package = "lme4") # soooo sloooow
   
   )
   
@@ -108,24 +106,15 @@ find_models_to_test <- function(model_type){
   
   }
 
-
-
-# compare alternative types of models
-
 test_alternative_regression_families <- function(input_data, design_list){
+  
+  # to do add reference as offset
+  # check equivalence of logRA and log_sample w/ reference adjustment
   
   require(dplyr)
   require(lme4)
   
   # Use AIC to evaluate the relative merits of alternative homoschedastic parameteric models
-  
-  # If random effects are present, test:
-  # 1) normal
-  # 2) log-normal
-  # 3) poisson
-  # If only fixed effects are included, also test:
-  # 4) negative binomial
-  # 5) quasi-poisson (rather than poisson)
   
   # check compatibility of data and design
   
@@ -135,12 +124,12 @@ test_alternative_regression_families <- function(input_data, design_list){
   
   # fit model
   model_formula <- paste("RA", design_list[["model_formula"]])
-  model_type <- ifelse(grepl("|", design_list[["model_formula"]]), "lme4", "lm")
+  model_type <- ifelse(grepl("\\|", model_formula), "lme4", "lm")
   
   model_description = c('lme4' = 'linear mixed-effects model', 'lm' = 'linear fixed effects model')
   # specify models tested based on regression design
   
-  cat(paste("testing alternative models: RA",  design_list[["model_formula"]],
+  print(paste("testing alternative models: RA",  design_list[["model_formula"]],
               "using a", model_description[model_type]))
   
   models_to_test <- find_models_to_test(model_type)
@@ -189,112 +178,37 @@ test_alternative_regression_families <- function(input_data, design_list){
   
   model_AIC <- list()
   for(model_row in 1:length(models_to_test)){
+    require(models_to_test[[model_row]]$package, character.only = TRUE)
     
     a_model <- models_to_test[[model_row]]
     
     mod_model <- ifelse(a_model$transform == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
-    #gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model)
+    # if a non-gaussian model is supplied it is looking for integer count data
+    mod_model <- ifelse(a_model$fxn %in% c("glm", "glmer", "glm.nb"), gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model), mod_model)
     
-    model_AIC[[model_row]] <- five_peptides %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model))) 
-    
-  }
-  
-  do.call("rbind", model_AIC)
-  
-  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
-  #five_peptides <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:5])
-  
-  mod_model <- ifelse(a_model$transform == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
-  
-  # call appropriate function and specify optional parameters
-  #model_fit <- do.call(get(a_model$fxn), list(data = one_peptide,
-  #                                            formula = mod_model,
-  #                                            unlist(a_model[["call_params"]])))
-  
-  #as.numeric(AIC(logLik(do.call(get(a_model$fxn), list(data = one_peptide,
-  #                                            formula = mod_model,
-  #                                            unlist(a_model[["call_params"]]))))))
-  
-  five_peptides %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model)))  
-  
-  
-  
-  
-  fit_AIC <- function(all_data, mod_model, a_model){
-    
-    data.frame(model = a_model$model_name,
-               AIC = do.call(get(a_model$fxn),
-                             append(list(data = all_data, formula = mod_model), a_model[["call_params"]])) %>%
-                 logLik() %>% AIC() %>% as.numeric())
-    
-    #data.frame(model = a_model$model_name,
-    #           AIC = do.call(get(a_model$fxn), list(data = all_data,
-    #                                                formula = mod_model,
-    #                                                c(a_model[["call_params"]]))) %>% logLik() %>% AIC() %>% as.numeric())
+    model_AIC[[model_row]] <- tidy_input %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model))) 
     
   }
   
-  model_fit <- get(a_model['fxn'])(data = one_peptide, formula = mod_model, list(REML = "F"))
-  model_fit <- get(a_model$fxn)(data = one_peptide, formula = tmp_model, REML = F, family = poisson(link = `log`))
+  all_AIC <- do.call("rbind", model_AIC)
   
-  tmp_model <- gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model)
-  
-  AIC(logLik(model_fit))
-  
-  summary(model_fit)$logLik
-  
-  
-  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
-  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
-  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
-  
-  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
-  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
-  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
- 
-  
-  
-  # check equivalence of logRA and log_sample w/ reference adjustment
-  
-  
-  
-  # Gene-wise comparison based on which model is best for each feature
-  # Overall model support from sum of AIC
-  
-  
-  
-  
-  
-  
-  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3") %>% group_by(peptide)
-  
-  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
-  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
-  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
-  
-  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
-  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
-  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
-  
-  #library(MASS)
-  #model4 <- glm.nb(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
-  
-  
-  
-  
-  
-  
-  
+  # filter models which couldn't be fit (and resulted in massssive AIC (i.e >1e8)
+  all_AIC <- all_AIC %>% ungroup() %>% filter(AIC < 1e5)
+
+  return(all_AIC)
+
   }
 
 
+#design_list <- design_setup(design_df, "~ 0 + segregant", "newName")
+#alt_model_AIC <- test_alternative_regression_families(input_data, design_list)
 
+#ggplot(alt_model_AIC %>% group_by(model) %>% dplyr::summarize(AIC = sum(AIC)), aes(x = model, y = AIC)) + geom_bar(stat = "identity")
 
+#ggplot(spread(alt_model_AIC, model, AIC), aes(x = `log-normal response, linear regression` - `negative binomial regression`)) +
+#  geom_bar(binwidth = 500) + expand_limits(x = 0)
 
-
-
-
-
+design_list <- design_setup(design_df, "~ 0 + segregant + (1|bioR)", "newName")
 
 
 
