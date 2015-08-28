@@ -233,18 +233,17 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
 
 
 
-variance_smoother <- function(replicated_subet){
+variance_smoother <- function(filter_values, ...){
   
-  require(ggplot2)
-  require(grid)
+  require(dplyr)
   
-  # fit a smoother across squared residuals versus power surrogate
+  # calculate excess variance associatd with power surrogate
   
-  if(nrow(replicated_subet) > 500*20){
-    nbins <- floor(nrow(replicated_subet) / 500)
+  if(nrow(filter_values) > 500*20){
+    nbins <- floor(nrow(filter_values) / 500)
     binsize <- 500
-  }else if(nrow(replicated_subet) > 100*20){
-    nbins <- floor(nrow(replicated_subet) / 100)
+  }else if(nrow(filter_values) > 100*20){
+    nbins <- floor(nrow(filter_values) / 100)
     binsize <- 100
   }else{
     warning("< 2000 measurements - Too little data to reliably estimate relationship between variance and power surrogate")
@@ -253,42 +252,62 @@ variance_smoother <- function(replicated_subet){
   
   #  nrow(replicated_subet) == nbins * binsize + nrow(replicated_subet) %% binsize
   
-  bin = c(rep(c(1:(nbins - nrow(replicated_subet) %% binsize)), each = binsize),
-          rep(c(((nbins - nrow(replicated_subet) %% binsize)+1) : nbins), each = binsize+1))
+  bin = c(rep(c(1:(nbins - nrow(filter_values) %% binsize)), each = binsize),
+          rep(c(((nbins - nrow(filter_values) %% binsize)+1) : nbins), each = binsize+1))
   
-  if(!(length(bin) == nrow(replicated_subet))){
+  if(!(length(bin) == nrow(filter_values))){
     stop("length of bin assignment vector differs from number of measurements") 
   }
   
-  replicated_subet <- replicated_subet %>% ungroup() %>% arrange(PS) %>% mutate(bin = bin)
+  binned_obs <- filter_values %>% ungroup() %>% arrange(PS) %>% mutate(bin = bin) %>% group_by(bin)
   
-  variance_PS_rel <- replicated_subet %>% group_by(bin) %>% dplyr::summarize(variance = mean(std_resid^2), PS = mean(PS))
+  if(var_type == "feature-ps"){
+  # If there is feature-specific and power-surrogate dependent variance,
+  # Then aggregate the total variance of a bin (sum(rse^2)) and subtract sum(peptide_var)
+  # threshold to zero
   
-  var_spline <- smooth.spline(y = variance_PS_rel$variance, x = variance_PS_rel$PS, df = 11)
+  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = (sum(residual^2) - sum(peptide_var))/n(),
+                                                  ps_var = ifelse(ps_var >= 0, ps_var, 0),
+                                                  PS = mean(PS))
   
-  return_list <- list()
-  # replicated_subet <- replicated_subet %>% mutate(psdp = predict(var_spline, x = PS)$y^-1)
-  return_list[["spline"]] <- var_spline
+  }else if(var_type == "ps"){
+  # fit 
+  
+    bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum(residual^2)/n(),
+                                                    ps_var = ifelse(ps_var >= 0, ps_var, 0),
+                                                    PS = mean(PS))
+  
+  }else{
+   stop("Invalid var_type") 
+  }
+  
+  
+  var_spline <- smooth.spline(y = bin_variance$ps_var, x = bin_variance$PS, df = 11)
   
   # summary plots
   
   # Variance binned by power surrogate fitted versus power surrogate
   
-  #variance_PS_rel <- variance_PS_rel %>% mutate(variance_fitted = predict(var_spline)$y) 
-  #return_list[["plots"]][["spline variance versus PS"]] <- ggplot(variance_PS_rel, aes(x = PS)) + geom_point(aes(y = variance)) + geom_line(aes(y = variance_fitted), color = "RED", size = 2)
+  if(verbose == T){
   
-  # MA plot for all data - residual versus power surrogate
+    require(ggplot2)
+    
+    hex_theme <- theme(text = element_text(size = 23), axis.text = element_text(color = "black"), 
+                       panel.background = element_rect(fill = "gray92"), axis.line = element_line(size = 1), axis.ticks = element_line(size = 1))
   
-  #hex_theme <- theme(text = element_text(size = 23, face = "bold"), title = element_text(size = 25, face = "bold"), panel.background = element_rect(fill = "aliceblue"), 
-  #                   legend.position = "top", strip.background = element_rect(fill = "cornflowerblue"), strip.text = element_text(color = "cornsilk"), panel.grid.minor = element_blank(), 
-  #                   panel.grid.major = element_blank(), axis.line = element_blank(), legend.key.width = unit(6, "line")) 
-  
+    bin_variance <- bin_variance %>% mutate(variance_fitted = predict(var_spline)$y) 
+    print(
+      ggplot(bin_variance, aes(x = PS)) + geom_point(aes(y = ps_var)) + geom_line(aes(y = variance_fitted), color = "RED", size = 2) + hex_theme +
+      scale_x_continuous("Power surrogate") + scale_y_continuous("Excess variance") + ggtitle("Excess variance associated with power surrogate")
+    )
   #ggplot(replicated_subet, aes(x = PS, y = residual)) + geom_hex(bins = 200) + scale_fill_gradient(name = "Counts", low = "black", high = "red", trans = "log")  + hex_theme
   #ggplot(replicated_subet, aes(x = bin, y = residual)) + geom_hex(bins = 200) + scale_fill_gradientn(name = "Counts", colours = rainbow(7), trans = "log") + hex_theme
   #ggplot(replicated_subet, aes(x = bin, y = inf_std_resid^2)) + geom_hex(bins = 200) + scale_fill_gradient(name = "Counts", low = "black", high = "red", trans = "log") + hex_theme
   
-  return(return_list)
-  
+  }
+    
+  return(var_spline)
+
 }
 
 
@@ -304,10 +323,12 @@ resid_and_rse = function(fit){
   return(output)
 }
 
-test_normality <- function(fit_model){
+test_normality <- function(filter_values){
   
-  normalized_resids <- fit_model %>% mutate(psdp_resid = residual * sqrt(precision)) %>%
-    dplyr::select(peptide, psdp_resid, std_resid)
+  standard_residuals <- filter_values %>% mutate(student_resid = residual * sqrt(precision)) %>%
+    dplyr::select(peptide, student_resid) %>% group_by(peptide) %>%
+    mutate(std.resid = (student_resid - mean(student_resid))/sd(student_resid))
+  
   
   # If only two replicates of a level are present, take a random one (since two replicates will be symmetrical)
   

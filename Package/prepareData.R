@@ -209,12 +209,31 @@ test_alternative_regression_families <- function(input_data, design_list){
 #  geom_bar(binwidth = 500) + expand_limits(x = 0)
 
 design_list <- design_setup(design_df, "~ 0 + segregant + (1|bioR)", "newName")
+var_type = "feature-ps"
 
 
-
-fit_sample_precision <- function(input_data, design_list){
+fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
   
   require(dplyr)
+  
+  # either model feature-wise variance (feature)
+  # power-surrogate dependent variance (ps)
+  # both: feature-ps
+  
+  if(!is.character(var_type) | length(var_type) != 1){
+    stop("var_type must be a character vector of length 1") 
+  }
+  if(!(var_type %in% c("feature", "ps", "feature-ps"))){
+    stop("var_type must either be feature, ps, or feature-ps") 
+  }
+  if(is.null(input_data[["power_surrogate"]]) & var_type %in% c("ps", "feature-ps")){
+    warning("If vary_type is set to ps or feature-ps, a power surrogate must be supplied to 'data_setup'\n
+            var_type is being overwritten to specify feature-specific variance")
+    var_type <- "feature"
+  }
+  
+  
+  
   
   # Increasing generality
   # switch from peptide -> feature
@@ -272,35 +291,26 @@ fit_sample_precision <- function(input_data, design_list){
   tidy_input <- tidy_input %>% filter(!is.na(RA)) %>% group_by(peptide) %>%
     mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
   
-  # test alternative parametric models
+  # initialize variance components
   
-  #tidy_input <- tidy_input %>% filter(Reps >= 2)
+  if(var_type %in% c("feature", "feature-ps")){
+    tidy_input <- tidy_input %>% mutate(peptide_var = 1)
+  }
+  if(var_type %in% c("ps", "feature-ps")){
+    tidy_input <- tidy_input %>% mutate(ps_var = ifelse(var_type == "feature-ps", 0, 1))
+  }
   
-  #one_peptide <- tidy_input %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3") %>% group_by(peptide)
+  var_components <-  c("peptide_var", "ps_var")[c("peptide_var", "ps_var") %in% colnames(tidy_input)]
+  tidy_input <-  tidy_input %>% ungroup() %>% dplyr::mutate(total_variance = dplyr::select_(., .dots = as.list(var_components)) %>% rowSums()) %>%
+    mutate(precision = 1/total_variance) %>% group_by(peptide)
   
-  #model1 <- lmer(data = one_peptide, formula = "RA ~ segregant + (1|bioR)")
-  #model2 <- lmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)")
-  #model3 <- glmer(data = one_peptide, formula = "I(2^RA) ~ segregant + (1|bioR)", family = poisson(link = "log"))
-  
-  #model1a <- lm(data = one_peptide, formula = "PS ~ segregant + bioR")
-  #model2 <- lm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
-  #model3 <- glm(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR", family = quasipoisson(link = "log"))
-  
-  #library(MASS)
-  #model4 <- glm.nb(data = one_peptide, formula = "I(2^PS) ~ segregant + bioR")
-  
-  # use samples with technical replication
-  
-  # initial power surrogate dependent precision
-  # peptide precision
-  
-  tidy_input <- tidy_input %>% mutate(psdp = 1, pp = 1, precision = 1) %>% group_by(peptide)
+  # initialize tracking variables
   
   continue = T
   steps = 0
   track_normality <- NULL
-  
-  
+  model_logLik = NULL
+    
   while(continue){
     
     # perform a peptide-wise weighted regression (using empirical weights governed by power surrogate)
@@ -337,42 +347,62 @@ fit_sample_precision <- function(input_data, design_list){
       stop("unsupported model")
     }
     
-    #a_peptide <- tidy_input %>% filter(peptide == "AVQYLHEIKDSVVAAFQWATK.4")
-    #a_fit <- lmer(data = a_peptide, formula = "RA ~ 0 + segregant + (1|bioR)")
-    #a_fit2 <- lm(data = a_peptide, formula = "RA ~ 0 + segregant + bioR")
+    #set.seed(1234)
+    #tmp <- fit_model %>% filter(peptide %in% sample(unique(fit_model$peptide), 10)) %>%
+    #  group_by(peptide) %>% arrange(PS) %>% mutate(PSrank = 1:n())
     
-    # inflate residuals to account for variable fitting and then normalize w.r.t. average
-    # residual standard error for the peptide so that across peptide analysis can be done
+    #ggplot(tmp, aes(x = PS, y = residual)) + facet_wrap(~ peptide, scales = "free") + geom_point()
+    #8ggplot(tmp, aes(x = PSrank, y = abs(residual))) + facet_wrap(~ peptide, scales = "free") + geom_point()
     
-    fit_model <- fit_model %>% group_by(peptide) %>% mutate(pp = sd(residual * sqrt(psdp)) * rse/sd(residual),
-                                                            std_resid = residual * sqrt(pp))
+    # Total variance =
+    # V_ij = Vpep_i + Vps_ij
+    # J*Vpep_i = J * rse^2 - sum(Vps_ij) 
     
-    if(is.null(input_data[["power_surrogate"]])){
+    # fit peptide variance:
+    if(var_type %in% c("feature", "feature-ps")){
       
-      # if a power_surrogate does not exist then only consider peptide-specific variance tacked onto
-      # variance of random effects (when present)
+      fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (n()*rse^2 - sum(ps_var))/n(),
+                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
-      next
     }
     
-    #one_peptide <- fit_model %>% filter(peptide == "AAAAQDEITGDGTTTVVCLVGELLR.3")
-    replicated_subet <- fit_model
-    # replicated_subet <- fit_model %>% filter(Reps > 1, !is.na(PS))
+    if(var_type == "feature"){
+      
+     # no need to iterate, stop the while loop
+      fit_model %>% mutate(total_variance = ps_var,
+                           precision = total_variance^-1)
+      continue = F
+      next
+      
+    }else{
+      
+      # fit power surrogate dependent variance either in addition to peptide variance or as the sole determinant of variability
+      
+      verbose <- T
+      filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
+      
+      fit_ps_var <- variance_smoother(filter_values)
+      
+      fit_model <- fit_model %>% mutate(ps_var = predict(fit_ps_var, x = PS)$y,
+                                        ps_var = ifelse(ps_var >= 0, ps_var, 0)) %>% ungroup() %>%
+        mutate(total_variance = dplyr::select_(., .dots = as.list(var_components)) %>% rowSums()) %>%
+        mutate(precision = 1/total_variance) %>% group_by(peptide)
+      
+    }
     
-    # across genes fit fsdp | pp, residuals    
-    fit_rsdp <- variance_smoother(replicated_subet) 
     
-    # update peptide precision and power-surrogate dependent precision
-    fit_model <- fit_model %>% mutate(psdp = predict(fit_rsdp[["spline"]], x = PS)$y^-1,
-                                      precision = pp*psdp)
+    filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
     
-    # gauge log-normality of residuals with and without correction for power surrogate
+    logLik = filter_values %>% ungroup() %>% transmute(logLik = dnorm(x = residual, mean = 0, sd = sqrt(total_variance), log = T))
+    #hist(logLik$logLik, breaks = 100)
+    model_logLik <- c(model_logLik, sum(logLik$logLik))
     
-    # normality_test <- test_normality(fit_model)
+    # Check normality
+    # normality_test <- test_normality(filter_values)
     
     # Assess convergence in pi_0
     
-    steps = steps +1
+    steps = steps + 1
     #track_normality <- rbind(track_normality, data.frame(steps, ks.psdp = qvalue(normality_test$ks.psdp)$pi0, ks.std = qvalue(normality_test$ks.std)$pi0))
     
     if(steps > 10){
