@@ -308,7 +308,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
   
   continue = T
   steps = 0
-  track_normality <- NULL
+  track_normality <- list()
   model_logLik = NULL
     
   while(continue){
@@ -361,6 +361,9 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     # fit peptide variance:
     if(var_type %in% c("feature", "feature-ps")){
       
+      #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (sum(residual^2) - sum(ps_var))/n(),
+      #                                                        peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
+      
       fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (n()*rse^2 - sum(ps_var))/n(),
                                                               peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
@@ -390,25 +393,28 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
       
     }
     
+    # with this approach, variance can be occationally pushed to zero
+    fit_model <- fit_model %>% mutate(precision = ifelse(is.infinite(precision), max(precision[is.finite(precision)]), precision))
+    
+    # Summarize model based on log-likelhood and normality of residuals
     
     filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
     
     logLik = filter_values %>% ungroup() %>% transmute(logLik = dnorm(x = residual, mean = 0, sd = sqrt(total_variance), log = T))
     #hist(logLik$logLik, breaks = 100)
-    model_logLik <- c(model_logLik, sum(logLik$logLik))
+    model_logLik <- sort(logLik$logLik, decreasing = T)[1:ceiling(nrow(filter_values)*0.95)]
     
     # Check normality
-    # normality_test <- test_normality(filter_values)
+    normality_test <- test_normality(filter_values)
+    track_normality[[steps + 1]] <- normality_test
     
     # Assess convergence in pi_0
     
     steps = steps + 1
-    #track_normality <- rbind(track_normality, data.frame(steps, ks.psdp = qvalue(normality_test$ks.psdp)$pi0, ks.std = qvalue(normality_test$ks.std)$pi0))
     
     if(steps > 10){
       continue = F
     }
-    
   }
 
   

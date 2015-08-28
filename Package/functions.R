@@ -323,69 +323,66 @@ resid_and_rse = function(fit){
   return(output)
 }
 
-test_normality <- function(filter_values){
+test_normality <- function(filter_values, ...){
+  
+  require(dplyr)
+  require(moments)
+  require(qvalue)
   
   standard_residuals <- filter_values %>% mutate(student_resid = residual * sqrt(precision)) %>%
     dplyr::select(peptide, student_resid) %>% group_by(peptide) %>%
     mutate(std.resid = (student_resid - mean(student_resid))/sd(student_resid))
   
-  
-  # If only two replicates of a level are present, take a random one (since two replicates will be symmetrical)
-  
-  #studentized_resids <- studentized_resids %>% group_by(peptide, bioR) %>% mutate(random_rep = 1:n() == sample(1:n(), 1)) %>%
-  #  filter(random_rep | Reps > 2) %>% dplyr::select(-random_rep)
-  
-  # Standardize each peptides residuals
-  
-  normalized_resids <- normalized_resids %>% group_by(peptide) %>% mutate(psdp_resid = (psdp_resid - mean(psdp_resid))/sd(psdp_resid),
-                                                                          std_resid = (std_resid - mean(std_resid))/sd(std_resid))
-  
   # devations form log-normality of residuals are primarily due to excess kurtosis
-  
-  library(moments)
-  library(qvalue)
   # look at the influence of removing residuals versus average kurtosis and normality of residuals
+  
+  ordered_residuals <- standard_residuals %>% ungroup() %>% arrange(desc(abs(std.resid)))
+  
   residual_fraction_removed <- c(0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.04)
-  
-  psdp_order <- normalized_resids %>% ungroup() %>% arrange(desc(abs(psdp_resid)))
-  std_order <- normalized_resids %>% ungroup() %>% arrange(desc(abs(std_resid)))
-  
-  normality_summary <- NULL
+  overall_normality_summary <- NULL
   for(a_frac in residual_fraction_removed){
     
-    filtered_entries <- 1:floor(a_frac*nrow(psdp_order))
+    filtered_entries <- 1:floor(a_frac*nrow(ordered_residuals))
     if(0 %in% filtered_entries){filtered_entries <- NULL}  
     
     if(is.null(filtered_entries)){
-      psdp_filter <- psdp_order
-      std_filter <- std_order
+      residuals_filtered <- ordered_residuals
     }else{
-      psdp_filter <- psdp_order %>% slice(-filtered_entries)
-      std_filter <- std_order %>% slice(-filtered_entries)
+      residuals_filtered <- ordered_residuals %>% slice(-filtered_entries)
     }
     
-    psdp_filter <- psdp_filter %>% group_by(peptide) %>%
-      mutate(psdp_resid = (psdp_resid-mean(psdp_resid))/sd(psdp_resid)) %>% 
-      dplyr::summarize(kurtosis.psdp = kurtosis(psdp_resid),
-                       ks.psdp = ks.test(std_resid, "pnorm")$p)
+    # renormalize having removed outliers
+    residuals_filtered <- residuals_filtered %>% group_by(peptide) %>%
+      mutate(std.resid = (std.resid - mean(std.resid))/sd(std.resid)) %>%
+      dplyr::summarize(kurtosis.resid = kurtosis(std.resid),
+                       ks.p = ks.test(std.resid, "pnorm")$p)
     
-    psdp_summary <- psdp_filter %>% ungroup() %>% dplyr::summarize(kurtosis.psdp.avg = mean(kurtosis.psdp),
-                                                                   ks.psdp.pdist = qvalue(ks.psdp)$pi0)
+    normality_summary <- residuals_filtered %>% ungroup() %>% dplyr::summarize(kurtosis.resid.avg = mean(kurtosis.resid),
+                                                                               ks.p.pi0 = qvalue(ks.p)$pi0)
     
-    std_filter <- std_filter %>% group_by(peptide) %>%
-      mutate(std_resid = (std_resid-mean(std_resid))/sd(std_resid)) %>% 
-      dplyr::summarize(kurtosis.std = kurtosis(std_resid),
-                       ks.std = ks.test(std_resid, "pnorm")$p)
-    
-    std_summary <- std_filter %>% ungroup() %>% dplyr::summarize(kurtosis.std.avg = mean(kurtosis.std),
-                                                                 ks.std.pdist = qvalue(ks.std)$pi0)
-    
-    normality_summary <- rbind(normality_summary,
-                     data.frame(residual_fraction_removed = a_frac, psdp_summary, std_summary))
-    
+    overall_normality_summary <- rbind(overall_normality_summary,
+                                       data.frame(residual.fraction.removed = a_frac, normality_summary))
   }
   
-  return(normality_summary)
+  if(verbose){
+    
+    require(ggplot2)
+    require(tidyr)
+    
+    hex_theme <- theme(text = element_text(size = 23), axis.text = element_text(color = "black"), 
+                       panel.background = element_rect(fill = "gray92"), axis.line = element_line(size = 1), axis.ticks = element_line(size = 1, color = "black"))
+    
+    print(
+      ggplot(overall_normality_summary %>% gather(measure, value, -residual.fraction.removed),
+             aes(x = residual.fraction.removed, y = value, color = measure)) +
+        geom_point() + geom_line() + facet_grid(measure ~ ., scale = "free_y") +
+        hex_theme + expand_limits(y = c(0,1)) +
+        scale_x_continuous("Fraction of residuals removed") +
+        scale_y_continuous("") + ggtitle("Excess variance associated with power surrogate")
+    )
+  }
+  
+  return(overall_normality_summary)
   
 }
 
