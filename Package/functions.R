@@ -266,14 +266,13 @@ variance_smoother <- function(filter_values, ...){
   # Then aggregate the total variance of a bin (sum(rse^2)) and subtract sum(peptide_var)
   # threshold to zero
   
-  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = (sum(residual^2) - sum(peptide_var))/n(),
+  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = (sum((residual*dofadj)^2) - sum(peptide_var))/n(),
                                                   ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                   PS = mean(PS))
   
   }else if(var_type == "ps"){
-  # fit 
   
-    bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum(residual^2)/n(),
+    bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum((residual*dofadj)^2)/n(),
                                                     ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                     PS = mean(PS))
   
@@ -310,6 +309,17 @@ variance_smoother <- function(filter_values, ...){
 
 }
 
+
+resid_and_dofadj <- function(fit){
+  if(class(fit) == "lm"){
+    output = data.frame(residual = fit$resid, dofadj = sqrt(n()/df.residual(fit)))
+  }else if(class(fit) == "lmerMod"){
+    output = data.frame(residual = residuals(fit), dofadj = sigma(fit)/sqrt(mean(residuals(fit)^2)))
+  }else{
+    stop("unsupported model class, only lm and lme4 models are currently available") 
+  }
+  return(output)
+}
 
 
 resid_and_rse = function(fit){

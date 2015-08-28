@@ -317,17 +317,6 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     # perform a point estimate or conditions or biological replicates (when technical replicates are
     # availaable) - calculate residuals
     
-    # tidy_input <- tidy_input %>% filter(peptide %in% unique(tidy_input$peptide)[1:100])
-    
-    # tidy_subset <- tidy_input %>% filter(peptide == unique(tidy_input$peptide)[1])
-    
-    #fit_lmer <- lmer(data = tidy_subset, formula = "RA ~ 0 + segregant + (1|bioR)")
-    # fitting residuals about the mean while accounting for replicate effects
-    #fit_lm <- lm(data = tidy_subset, formula = "RA ~ 0 + segregant + bioR")
-    # fitting residuals about the mean of biological replicates
-    
-    # fit the provided model to each feature, extract residuals and residual standard error
-    
     if(steps == 0){
       setup_regression <- tidy_input
     }else{
@@ -337,11 +326,11 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     if(model_type == "lme4"){
       require(lme4)
       
-      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_rse(lmer(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_dofadj(lmer(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
       
     }else if(model_type == "lm"){
       
-      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_rse(lm(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_dofadj(lm(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
       
     }else{
       stop("unsupported model")
@@ -361,11 +350,17 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     # fit peptide variance:
     if(var_type %in% c("feature", "feature-ps")){
       
-      #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (sum(residual^2) - sum(ps_var))/n(),
+      fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = median(residual^2*dofadj - ps_var),
+                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
+      
+      #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (sum(residual^2)*dofadj - sum(ps_var))/n(),
       #                                                        peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
-      fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (n()*rse^2 - sum(ps_var))/n(),
-                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
+      #a_peptide <- "LVAGGAAQNTAR.2"
+      #tmp <- fit_model %>% ungroup() %>% filter(peptide == a_peptide)
+      
+      #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = (n()*rse^2 - sum(ps_var))/n(),
+      #                                                        peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
     }
     
@@ -402,7 +397,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     
     logLik = filter_values %>% ungroup() %>% transmute(logLik = dnorm(x = residual, mean = 0, sd = sqrt(total_variance), log = T))
     #hist(logLik$logLik, breaks = 100)
-    model_logLik <- sort(logLik$logLik, decreasing = T)[1:ceiling(nrow(filter_values)*0.95)]
+    model_logLik <- c(model_logLik, sum(sort(logLik$logLik, decreasing = T)[1:ceiling(nrow(filter_values)*0.95)]))
     
     # Check normality
     normality_test <- test_normality(filter_values)
@@ -412,7 +407,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature"){
     
     steps = steps + 1
     
-    if(steps > 10){
+    if(steps > 4){
       continue = F
     }
   }
