@@ -266,7 +266,7 @@ variance_smoother <- function(filter_values, ...){
   # Then aggregate the total variance of a bin (sum(rse^2)) and subtract sum(peptide_var)
   # threshold to zero
   
-  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = (sum((residual*dofadj)^2) - sum(peptide_var))/n(),
+  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = median((residual*dofadj)^2 - peptide_var),
                                                   ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                   PS = mean(PS))
   
@@ -348,7 +348,7 @@ test_normality <- function(filter_values, ...){
   
   ordered_residuals <- standard_residuals %>% ungroup() %>% arrange(desc(abs(std.resid)))
   
-  residual_fraction_removed <- c(0, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.04)
+  residual_fraction_removed <- c(0, 0.001, 0.01, 0.03, 0.05, 0.07, 0.1)
   overall_normality_summary <- NULL
   for(a_frac in residual_fraction_removed){
     
@@ -409,4 +409,128 @@ fit_AIC <- function(all_data, mod_model, a_model){
     #                                                c(a_model[["call_params"]]))) %>% logLik() %>% AIC() %>% as.numeric())
     
   }
+
+
+find_models_to_test <- function(model_type){
+  
+  all_models_list <- list(
+  
+  # fixed effects models
+  list(model_type = "lm", model_name = "linear regression", fxn = "lm", transform = "", call_params = list(), package = "stats"),
+  list(model_type = "lm", model_name = "log-normal response, linear regression", fxn = "lm", transform = "log", call_params = list(), package = "stats"),
+  #list(model_type = "lm", model_name = "quasi-poisson regression", fxn = "glm", transform = "", call_params = list(family = quasipoisson(link = "log")), package = "stats"),
+  list(model_type = "lm", model_name = "negative binomial regression", fxn = "glm.nb", transform = "", call_params = list(), package = "MASS"),
+  
+  # random/mixed effect models
+  list(model_type = "lme4", model_name = "linear regression", fxn = "lmer", transform = "", call_params = list(REML = F), package = "lme4"),
+  list(model_type = "lme4", model_name = "log-normal response, linear regression", fxn = "lmer", transform = "log", call_params = list(REML = F), package = "lme4")
+  #list(model_type = "lme4", model_name = "poisson regression", fxn = "glmer", transform = "", call_params = list(family = poisson(link = "log")), package = "lme4") # soooo sloooow
+  
+  )
+  
+  tested_models <- all_models_list[sapply(all_models_list, function(x){x$model_type}) == get("model_type")]
+  if(length(tested_models) == 0){
+   stop("No models found corresponding to model_type")
+  }
+  
+  cat(paste("comparing alternative models:\n-", paste(sapply(tested_models, function(x){x$model_name}), collapse = "\n- ")))
+  
+  return(tested_models)
+  
+  }
+
+test_alternative_regression_families <- function(input_data, design_list){
+  
+  # to do add reference as offset
+  # check equivalence of logRA and log_sample w/ reference adjustment
+  
+  require(dplyr)
+  require(lme4)
+  
+  # Use AIC to evaluate the relative merits of alternative homoschedastic parameteric models
+  
+  # check compatibility of data and design
+  
+  if(!(all(colnames(input_data[["sample_log_IC"]]) == design_list[["design_df"]][,colnames(design_list[["design_df"]]) == design_list[["ID"]]]))){
+    stop("input_data and design_list samples do not match")
+  }
+  
+  # fit model
+  model_formula <- paste("RA", design_list[["model_formula"]])
+  model_type <- ifelse(grepl("\\|", model_formula), "lme4", "lm")
+  
+  model_description = c('lme4' = 'linear mixed-effects model', 'lm' = 'linear fixed effects model')
+  # specify models tested based on regression design
+  
+  print(paste("testing alternative models: RA",  design_list[["model_formula"]],
+              "using a", model_description[model_type]))
+  
+  models_to_test <- find_models_to_test(model_type)
+  
+  # Convert the matrix of feature relative abundances to a tall data.frame/tbl_df
+  
+  tidy_input <- t(input_data[["sample_log_IC"]]) %>% as.data.frame() %>%
+    mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+    left_join(design_list[["design_df"]], by = design_list[["ID"]]) %>% 
+    tbl_df() %>% gather_(key_col = "peptide", value_col = "sample_log_IC", gather_cols = rownames(input_data[["sample_log_IC"]]), convert = T)
+  
+  if(input_data[["reference_present"]]){
+    
+    tidy_ref <- t(input_data[["reference_log_IC"]]) %>% as.data.frame() %>% 
+      mutate_(.dots= setNames(list(~rownames(.)), design_list[["ID"]])) %>%
+      tbl_df() %>% gather_(key_col = "peptide", value_col = "reference_log_IC", gather_cols = rownames(input_data[["reference_log_IC"]]), convert = T)
+    
+    # Assert (and test!) that sample_log_IC and reference_log_IC are aligned
+    
+    test_rows <- sample(1:nrow(tidy_input), 10)
+    if(!all(tidy_input[test_rows, c(design_list[["ID"]], 'peptide')] == tidy_ref[test_rows, c(design_list[["ID"]], 'peptide')])){
+      stop("sample_log_IC and reference_log_IC are misaligned!")
+    }
+    
+    tidy_input <- bind_cols(tidy_input, tidy_ref %>% dplyr::select(reference_log_IC)) %>% tbl_df()
+    
+  }
+  
+  # remove features with lots of missing data
+  
+  peptide_co <- 0.3
+  
+  if(input_data[["reference_present"]]){
+    
+    tidy_input <- tidy_input %>% filter(!is.na(sample_log_IC) & !is.na(reference_log_IC)) %>% group_by(peptide) %>%
+      mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
+    
+  }else{
+    
+    tidy_input <- tidy_input %>% filter(!is.na(sample_log_IC)) %>% group_by(peptide) %>%
+      mutate(n_sample = n()/nrow(design_list[["design_df"]])) %>% filter(n_sample >= peptide_co)
+    
+  }
+  
+  # Test all desired models and extract feature-wise AIC
+  
+  model_AIC <- list()
+  for(model_row in 1:length(models_to_test)){
+    require(models_to_test[[model_row]]$package, character.only = TRUE)
+    
+    a_model <- models_to_test[[model_row]]
+    
+    mod_model <- ifelse(a_model$transform == "log", gsub('RA', 'sample_log_IC', model_formula), gsub('RA', 'I(2^sample_log_IC)', model_formula))
+    # if a non-gaussian model is supplied it is looking for integer count data
+    mod_model <- ifelse(a_model$fxn %in% c("glm", "glmer", "glm.nb"), gsub('2\\^sample_log_IC', 'floor(2^sample_log_IC)', mod_model), mod_model)
+    
+    model_AIC[[model_row]] <- tidy_input %>% group_by(peptide) %>% do(dplyr::mutate(fit_AIC(., mod_model, a_model))) 
+    
+  }
+  
+  all_AIC <- do.call("rbind", model_AIC)
+  
+  # filter models which couldn't be fit (and resulted in massssive AIC (i.e >1e8)
+  all_AIC <- all_AIC %>% ungroup() %>% filter(AIC < 1e5)
+
+  return(all_AIC)
+
+  }
+
+
 
