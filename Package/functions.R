@@ -168,7 +168,7 @@ data_setup <- function(sample_log_IC, reference_log_IC = NULL, equiv_species_mat
   
 }
   
-
+#design_df = condMat; model = "~ 0 + segregant + (1|bioR)"; id_column = "newName"
 
 design_setup <- function(design_df, model, id_column, model_effects = NULL){
   
@@ -190,7 +190,7 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
   
   # model check
   if(class(try(as.formula(model))) == "try-error"){
-   
+    
     stop("model is misspecified")
     
   }
@@ -212,10 +212,17 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
     print(paste("model effects are:", paste(model_effects, collapse = ", ")))
   }
   
+  random_effects <- regmatches(model, gregexpr('\\|[ *+[:alnum:]]+', model))[[1]]
+  random_effects <- regmatches(random_effects, gregexpr('[[:alnum:]]+', random_effects))[[1]]
+  
+  effect_types <- data.frame(name = model_effects,
+                             type = ifelse(model_effects %in% random_effects, "random", "fixed"),
+                             class = apply(design_df, 2, class)[model_effects])
+  
   # check for valid matches
   
   if(!all(c(id_column, model_effects) %in% colnames(design_df))){
-   
+    
     stop("id column and specified effects must match columns of design_df")
     
   }
@@ -224,6 +231,7 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
   design_list[["model_formula"]] <- model
   design_list[["design_df"]] <- design_df[,colnames(design_df) %in% c(id_column, model_effects)]
   design_list[["ID"]] <- id_column
+  design_list[["model_effects"]] <- effect_types
   
   return(design_list)
   
@@ -250,10 +258,10 @@ variance_smoother <- function(filter_values, ...){
     # return a flat line
   }
   
+  
   #  nrow(replicated_subet) == nbins * binsize + nrow(replicated_subet) %% binsize
   
-  bin = c(rep(c(1:(nbins - nrow(filter_values) %% binsize)), each = binsize),
-          rep(c(((nbins - nrow(filter_values) %% binsize)+1) : nbins), each = binsize+1))
+  bin = as.numeric(cut(1:nrow(filter_values),nbins))
   
   if(!(length(bin) == nrow(filter_values))){
     stop("length of bin assignment vector differs from number of measurements") 
@@ -266,9 +274,13 @@ variance_smoother <- function(filter_values, ...){
   # Then aggregate the total variance of a bin (sum(rse^2)) and subtract sum(peptide_var)
   # threshold to zero
   
-  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = median((residual*dofadj)^2 - peptide_var),
+  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = mean((residual*dofadj)^2 - peptide_var),
                                                   ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                   PS = mean(PS))
+  
+  #bin_variance <- binned_obs %>% dplyr::summarize(ps_var = median((residual*dofadj)^2 - peptide_var),
+  #                                                ps_var = ifelse(ps_var >= 0, ps_var, 0),
+  #                                                PS = mean(PS))
   
   }else if(var_type == "ps"){
   
@@ -281,7 +293,7 @@ variance_smoother <- function(filter_values, ...){
   }
   
   
-  var_spline <- smooth.spline(y = bin_variance$ps_var, x = bin_variance$PS, df = 11)
+  var_spline <- smooth.spline(y = bin_variance$ps_var, x = bin_variance$PS, df = ifelse(nbins < 50, 3, 11))
   
   # summary plots
   
