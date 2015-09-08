@@ -8,7 +8,7 @@ source("functions.R")
 
 missing_value_cutoff <- 0.3
 signal_floor <- 300
-SN_cutoff <- 1
+SN_cutoff <- exp(-2)
 
 #### Foss2007 Proteomics Dataset: Reformat files into standard inputs ####
 

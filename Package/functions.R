@@ -241,7 +241,7 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
 
 
 
-variance_smoother <- function(filter_values, ...){
+variance_smoother <- function(filter_values, var_type){
   
   require(dplyr)
   
@@ -283,6 +283,10 @@ variance_smoother <- function(filter_values, ...){
   #                                                PS = mean(PS))
   
   }else if(var_type == "ps"){
+  
+    #bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum((residual)^2)/n(),
+    #                                                ps_var = ifelse(ps_var >= 0, ps_var, 0),
+    #                                                PS = mean(PS))
   
     bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum((residual*dofadj)^2)/n(),
                                                     ps_var = ifelse(ps_var >= 0, ps_var, 0),
@@ -345,7 +349,7 @@ resid_and_rse = function(fit){
   return(output)
 }
 
-test_normality <- function(filter_values, ...){
+test_normality <- function(filter_values){
   
   require(dplyr)
   require(moments)
@@ -362,6 +366,7 @@ test_normality <- function(filter_values, ...){
   
   residual_fraction_removed <- c(0, 0.001, 0.01, 0.03, 0.05, 0.07, 0.1)
   overall_normality_summary <- NULL
+  overall_normality_track <- list()
   for(a_frac in residual_fraction_removed){
     
     filtered_entries <- 1:floor(a_frac*nrow(ordered_residuals))
@@ -373,14 +378,25 @@ test_normality <- function(filter_values, ...){
       residuals_filtered <- ordered_residuals %>% slice(-filtered_entries)
     }
     
+    residuals_filtered <- residuals_filtered %>% group_by(peptide) %>% mutate(std.resid = (student_resid - mean(student_resid))/sd(student_resid))
+    
+    # test sum(dnorm(residuals))
+    overall_normality_track[[length(overall_normality_track) + 1]] <- residuals_filtered %>% group_by(peptide) %>%
+      mutate(logD_student = dnorm(student_resid, 0, 1, log = T), logD_std = dnorm(std.resid, 0, 1, log = T)) %>%
+      dplyr::summarize(logD_student = sum(logD_student), logD_std = sum(logD_std), N = n()) %>%
+      mutate(residual.fraction.removed = a_frac)
+      
+    
     # renormalize having removed outliers
     residuals_filtered <- residuals_filtered %>% group_by(peptide) %>%
       mutate(std.resid = (std.resid - mean(std.resid))/sd(std.resid)) %>%
       dplyr::summarize(kurtosis.resid = kurtosis(std.resid),
-                       ks.p = ks.test(std.resid, "pnorm")$p)
+                       ks.p = ks.test(std.resid, "pnorm")$p,
+                       shapiro.p = shapiro.test(std.resid)$p)
     
     normality_summary <- residuals_filtered %>% ungroup() %>% dplyr::summarize(kurtosis.resid.avg = mean(kurtosis.resid),
-                                                                               ks.p.pi0 = qvalue(ks.p)$pi0)
+                                                                               ks.p.pi0 = qvalue(ks.p)$pi0,
+                                                                               shapiro.p.pi0 = ifelse(class(qvalue(shapiro.p)) == "numeric", 0, qvalue(shapiro.p)$pi0))
     
     overall_normality_summary <- rbind(overall_normality_summary,
                                        data.frame(residual.fraction.removed = a_frac, normality_summary))
@@ -404,7 +420,10 @@ test_normality <- function(filter_values, ...){
     )
   }
   
-  return(overall_normality_summary)
+  output <- list()
+  output[["normality_lik"]] <- overall_normality_track
+  output[["normality_fit"]] <- overall_normality_summary
+  return(output)
   
 }
 

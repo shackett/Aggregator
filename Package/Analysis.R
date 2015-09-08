@@ -5,17 +5,14 @@ library(tidyr)
 
 source("functions.R")
 
-missing_value_cutoff <- 0.3
-signal_floor <- 300
-SN_cutoff <- 1
-
-
 data_directory <- file.path("Data", "Processed")
 datasets <- list.files(data_directory)
 
 likTrack <- list()
 normTrack <- list() 
+normLik <- list()
 AICTrack <- list()
+verbose = T
 
 #do.call("rbind", likTrack)
 
@@ -26,11 +23,11 @@ for(a_dataset in datasets){
   for(a_var_type in c("feature", "ps", "feature-ps")){
     # test three models of variance
     
-    test_model <- fit_sample_precision(save_files$input_data, save_files$design_list, a_var_type, verbose = T)
+    test_model <- fit_sample_precision(save_files$input_data, save_files$design_list, a_var_type)
     
     #input_data = save_files$input_data
     #design_list = save_files$design_list
-    #var_type = "feature"
+    #var_type = a_var_type
     
     logLikelihoods <- sort(test_model$logLik[[1]]$logLik, decreasing = T)
     logLikelihoods <- logLikelihoods[1:ceiling(length(logLikelihoods)*0.95)]
@@ -39,20 +36,91 @@ for(a_dataset in datasets){
                                                    vartype = a_var_type,
                                                    logLik = sum(logLikelihoods) / length(logLikelihoods))
     
+    normLik[[length(normLik) + 1]] <- data.frame(dataset = a_dataset,
+                                                     vartype = a_var_type,
+                                                     do.call("rbind", test_model$normality[[1]]$normality_lik))
+    
     normTrack[[length(normTrack) + 1]] <- data.frame(dataset = a_dataset,
                                                      vartype = a_var_type,
-                                                     test_model$normality[[1]])
+                                                     test_model$normality[[1]]$normality_fit)
     
-    AICTrack[[length(AICTrack) + 1]] <- data.frame(dataset = a_dataset,
-                                                   vartype = a_var_type,
-                                                   test_model$pepAIC[[1]])
+    #AICTrack[[length(AICTrack) + 1]] <- data.frame(dataset = a_dataset,
+    #                                               vartype = a_var_type,
+    #                                               test_model$pepAIC[[1]])
     
   }
 }
 
-do.call("rbind", likTrack)
+save(likTrack, normLik, normTrack, file = "run.Rdata")
 
-do.call("rbind", normTrack)
+
+global_theme <- hex_theme <- theme(text = element_text(size = 20), title = element_text(size = 25), 
+                     panel.background = element_rect(fill = "gray92"), legend.position = "right", 
+                     axis.ticks = element_line(color = "black", size = 1),
+                     axis.text = element_text(color = "black", size = 20),
+                     panel.grid.minor = element_blank(), panel.grid.major = element_line(size = 1),
+                     axis.line = element_line(color = "black", size = 1), legend.key.height = unit(3, "line"),
+                     axis.text.x = element_text(angle = 60, hjust = 0.5, vjust = 0.5), strip.background = element_rect(fill = "gray70"),
+                     panel.margin = unit(1.5, "lines"))
+
+
+used_datasets <- c("Boer_logIC.Rdata", "Foss_logIC.Rdata", "Hackett_logIC.Rdata")
+
+top_fits <- do.call("rbind", normLik) %>% tbl_df()  %>% dplyr::select(dataset, peptide, residual.fraction.removed, vartype, logD_student, N) %>%
+  mutate(logD_student = logD_student/N) %>% group_by(dataset, peptide, residual.fraction.removed) %>%
+  filter(logD_student == max(logD_student)) %>% group_by(dataset, vartype, residual.fraction.removed) %>% dplyr::summarize(N = n())
+
+top_fits_subset <- top_fits %>% ungroup() %>% mutate(vartype = factor(vartype, levels = c("feature", "ps", "feature-ps"))) %>%
+  filter(dataset %in% used_datasets, residual.fraction.removed == 0) %>%
+  mutate(dataset = gsub('_logIC.Rdata', '', dataset),
+         dataset = paste(dataset, ifelse(dataset == "Boer", "metabolites", "peptides"), sep = "-"))
+
+ggplot(top_fits_subset %>% group_by(dataset) %>% mutate(N = N / sum(N)), aes(x = dataset, y = N, fill = vartype)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer("Variance\nModel", drop=F, palette = "Set1") + scale_y_continuous("Fraction of features best fit by\neach variance model", labels=percent, expand = c(0,0))  +
+  global_theme + theme(axis.title.x = element_blank())
+ggsave(file = "Writeup/Figures/varianceModelPerf.pdf", width = 7, height = 7)
+
+###
+
+#likSummary <- do.call("rbind", normLik) %>% tbl_df() %>% mutate(logD_student = logD_student/N, logD_std = logD_std/N) %>%
+#  group_by(dataset, vartype, residual.fraction.removed) %>% dplyr::summarize(logD_student = sum(logD_student), logD_std = sum(logD_std))
+
+#ggplot(likSummary, aes(x = residual.fraction.removed, y = logD_student, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
+#  geom_line()
+
+### Look at normality ###
+
+likNorm <- do.call("rbind", normTrack)
+
+stacked_normality_stats <- likNorm %>% filter(dataset %in% used_datasets) %>% gather("measure", "value", -c(dataset:residual.fraction.removed), convert = T) %>%
+  mutate(dataset = gsub('_logIC.Rdata', '', dataset),
+         dataset = paste(dataset, ifelse(dataset == "Boer", "metabolites", "peptides"), sep = "-"),
+         vartype = factor(vartype, levels = c("feature", "ps", "feature-ps")),
+         measure = ifelse(measure == "kurtosis.resid.avg", "'Average residual kurtosis'", measure),
+         measure = ifelse(measure == "ks.p.pi0", "'KS-test' ~ pi[0]", measure),
+         measure = ifelse(measure == "shapiro.p.pi0", "'Shapiro-Wilk' ~ pi[0]", measure))
+
+ggplot(stacked_normality_stats, aes(x = residual.fraction.removed, y = value, color = vartype)) +
+  geom_line(alpha = 0.6, size = 1.6) + facet_grid(measure ~ dataset, scale = "free_y", labeller = label_parsed) + expand_limits(y = c(0,1)) +
+  scale_x_continuous("Fraction of extreme observations removed", labels = percent) +
+  scale_color_brewer("Variance\nModel", drop=F, palette = "Set1") +
+  global_theme + theme(axis.title.y = element_blank())
+ggsave(file = "Writeup/Figures/normalityTests.pdf", width = 10.6, height = 10.2)
+
+
+ggplot(likNorm, aes(x = residual.fraction.removed, y = ks.p.pi0, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
+  geom_line()
+
+ggplot(likNorm, aes(x = residual.fraction.removed, y = shapiro.p.pi0, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
+  geom_line() + expand_limits(y = 1)
+
+ggplot(likNorm, aes(x = residual.fraction.removed, y = kurtosis.resid.avg, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
+  geom_line()
+
+  
+
+
 
 do.call("rbind", AICTrack) %>% group_by(dataset, vartype) %>% dplyr::summarize(AIC = sum(AIC))
 
@@ -218,7 +286,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       }else{
         
         fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual^2*dofadj - ps_var),
-                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
+                                                             peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
         
         #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = median(residual^2*dofadj - ps_var),
@@ -240,7 +308,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       
       filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
       
-      fit_ps_var <- variance_smoother(filter_values)
+      fit_ps_var <- variance_smoother(filter_values, var_type)
       
       fit_model <- fit_model %>% mutate(ps_var = predict(fit_ps_var, x = PS)$y,
                                         ps_var = ifelse(ps_var >= 0, ps_var, 0)) %>% ungroup() %>%
@@ -254,7 +322,9 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
     
     # Summarize model based on log-likelhood and normality of residuals
     
-    filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
+    filter_values <- fit_model %>% filter(abs(residual) > 1e-14) %>%
+      group_by(peptide) %>% filter(n() > 10)
+    
     #grouping_terms <- c("peptide", design_list$model_effect$name[design_list$model_effect$type == "fixed" & design_list$model_effect$class != "numeric"])
     
     #if(length(grouping_terms[grouping_terms != "peptide"]) != 0){
@@ -279,17 +349,17 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
     }
   }
   
-  if(model_type == "lme4"){
-    pepAIC <- setup_regression %>% do(data.frame(AIC = lmer(data = ., formula = model_formula, weights = precision, ML = T) %>% logLik() %>% AIC() %>% as.numeric()))
-  }else if(model_type == "lm"){
-    pepAIC <- setup_regression %>% do(data.frame(AIC = lm(data = ., formula = model_formula, weights = precision) %>% logLik() %>% AIC() %>% as.numeric()))
-  }else{
-    stop("unsupported model")
-  }
+  #if(model_type == "lme4"){
+  #  pepAIC <- setup_regression %>% do(data.frame(AIC = lmer(data = ., formula = model_formula, weights = precision, ML = T) %>% logLik() %>% AIC() %>% as.numeric()))
+  #}else if(model_type == "lm"){
+  #  pepAIC <- setup_regression %>% do(data.frame(AIC = lm(data = ., formula = model_formula, weights = precision) %>% logLik() %>% AIC() %>% as.numeric()))
+  #}else{
+  #  stop("unsupported model")
+  #}
   
   save_lists <- list()
   save_lists[["logLik"]] <- track_likelihood
   save_lists[["normality"]] <- track_normality
-  save_lists[["pepAIC"]] <- list(pepAIC)
+  #save_lists[["pepAIC"]] <- list(pepAIC)
   return(save_lists)
 }
