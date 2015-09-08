@@ -168,7 +168,7 @@ data_setup <- function(sample_log_IC, reference_log_IC = NULL, equiv_species_mat
   
 }
   
-#design_df = condMat; model = "~ 0 + segregant + (1|bioR)"; id_column = "newName"
+#design_df = condMat; model = "~ 0 + segregant"; id_column = "newName"
 
 design_setup <- function(design_df, model, id_column, model_effects = NULL){
   
@@ -213,7 +213,9 @@ design_setup <- function(design_df, model, id_column, model_effects = NULL){
   }
   
   random_effects <- regmatches(model, gregexpr('\\|[ *+[:alnum:]]+', model))[[1]]
-  random_effects <- regmatches(random_effects, gregexpr('[[:alnum:]]+', random_effects))[[1]]
+  if(length(random_effects) != 0){
+    random_effects <- regmatches(random_effects, gregexpr('[[:alnum:]]+', random_effects))[[1]]
+  }
   
   effect_types <- data.frame(name = model_effects,
                              type = ifelse(model_effects %in% random_effects, "random", "fixed"),
@@ -328,7 +330,7 @@ variance_smoother <- function(filter_values, var_type){
 
 resid_and_dofadj <- function(fit){
   if(class(fit) == "lm"){
-    output = data.frame(residual = fit$resid, dofadj = sqrt(n()/df.residual(fit)))
+    output = data.frame(residual = fit$resid, dofadj = sqrt(length(fit$resid)/df.residual(fit)))
   }else if(class(fit) == "lmerMod"){
     output = data.frame(residual = residuals(fit), dofadj = sigma(fit)/sqrt(mean(residuals(fit)^2)))
   }else{

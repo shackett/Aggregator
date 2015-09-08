@@ -94,7 +94,8 @@ power_surrogate <- log2(PepChargeSN)
 # Setup standard input
 
 input_data <- data_setup(sample_log_IC = sample_log_IC, equiv_species_mat = equiv_species_mat, mapping_mat = mapping_mat, power_surrogate = power_surrogate)
-design_list <- design_setup(condMat, "~ 0 + segregant + (1|bioR)", "newName")
+#design_list <- design_setup(condMat, "~ 0 + segregant + (1|bioR)", "newName")
+design_list <- design_setup(condMat, "~ 0 + segregant", "newName")
 
 save_files <- list()
 save_files[["input_data"]] <- input_data
@@ -161,7 +162,8 @@ input_data <- data_setup(sample_log_IC = log_lightIC, reference_log_IC = log_hea
 hackett_design <- hackett_design %>% mutate(InstBlock = paste(Instrument, Set, sep = "-"),
   FullBlock = paste(Instrument, Set, Block, sep = "-"))
 
-design_list <- design_setup(hackett_design, "~ 0 + Condition + (1|InstBlock)", "SampleName")
+#design_list <- design_setup(hackett_design, "~ 0 + Condition + (1|InstBlock)", "SampleName")
+design_list <- design_setup(hackett_design, "~ 0 + Condition", "SampleName")
 
 save_files <- list()
 save_files[["input_data"]] <- input_data
@@ -209,7 +211,10 @@ condition_levels <- exp_design %>% dplyr::select(Lim, GR) %>% unique() %>%
 exp_design <- exp_design %>% left_join(condition_levels %>% dplyr::select(-relGR), by = c("Lim", "GR")) %>%
   mutate(Month = factor(Month), Condition = factor(Condition), Method = factor(Method))
 
-design_list <- design_setup(exp_design, "~ 0 + Condition + Method + (1|Month)", "Sample")
+#design_list <- design_setup(exp_design, "~ 0 + Condition + Method + (1|Month)", "Sample")
+design_list <- design_setup(exp_design, "~ 0 + Condition + Method", "Sample")
+
+
 
 save_files <- list()
 save_files[["input_data"]] <- input_data

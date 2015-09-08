@@ -16,6 +16,8 @@ verbose = T
 
 #do.call("rbind", likTrack)
 
+datasets <- c("Boer_logIC.Rdata", "Foss_logIC.Rdata", "Hackett_logIC.Rdata")
+
 for(a_dataset in datasets){
   # analyze each dataset
   load(file.path(data_directory, a_dataset))
@@ -27,7 +29,7 @@ for(a_dataset in datasets){
     
     #input_data = save_files$input_data
     #design_list = save_files$design_list
-    #var_type = a_var_type
+    #var_type = "feature-ps"
     
     logLikelihoods <- sort(test_model$logLik[[1]]$logLik, decreasing = T)
     logLikelihoods <- logLikelihoods[1:ceiling(length(logLikelihoods)*0.95)]
@@ -83,11 +85,11 @@ ggsave(file = "Writeup/Figures/varianceModelPerf.pdf", width = 7, height = 7)
 
 ###
 
-#likSummary <- do.call("rbind", normLik) %>% tbl_df() %>% mutate(logD_student = logD_student/N, logD_std = logD_std/N) %>%
-#  group_by(dataset, vartype, residual.fraction.removed) %>% dplyr::summarize(logD_student = sum(logD_student), logD_std = sum(logD_std))
+likSummary <- do.call("rbind", normLik) %>% tbl_df() %>% mutate(logD_student = logD_student/N, logD_std = logD_std/N) %>%
+  group_by(dataset, vartype, residual.fraction.removed) %>% dplyr::summarize(logD_student = sum(logD_student), logD_std = sum(logD_std))
 
-#ggplot(likSummary, aes(x = residual.fraction.removed, y = logD_student, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
-#  geom_line()
+ggplot(likSummary, aes(x = residual.fraction.removed, y = logD_student, color = vartype)) + facet_grid(dataset ~ ., scale = "free_y") +
+  geom_line()
 
 ### Look at normality ###
 
@@ -129,6 +131,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
   
   require(dplyr)
   require(tidyr)
+  require(broom)
   
   # either model feature-wise variance (feature)
   # power-surrogate dependent variance (ps)
@@ -166,7 +169,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
   
   # fit model
   model_formula <- paste("RA", design_list[["model_formula"]])
-  model_type <- ifelse(grepl("|", design_list[["model_formula"]]), "lme4", "lm")
+  model_type <- ifelse(grepl("\\|", design_list[["model_formula"]]), "lme4", "lm")
   
   model_description = c('lme4' = 'linear mixed-effects model', 'lm' = 'linear fixed effects model')
   print(paste("testing the model: logRA",  design_list[["model_formula"]],
@@ -240,32 +243,23 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
     }else{
       setup_regression <- fit_model %>% select_(.dots = lapply(colnames(tidy_input), function(x){x}))
     }
-   
+    
     if(model_type == "lme4"){
       require(lme4)
       
-      #for(i in unique(setup_regression$peptide)){
-      #resid_and_dofadj(lmer(data = setup_regression %>% filter(peptide == i), formula = model_formula, weights = precision))
-      #}
-      
-      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_dofadj(lmer(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
-      
+      regressions <- setup_regression %>% group_by(peptide) %>% do(fit = lmer(formula = model_formula, data = ., weights = precision))
+        
     }else if(model_type == "lm"){
       
-      fit_model <- cbind(setup_regression, setup_regression %>% do(resid_and_dofadj(lm(data = ., formula = model_formula, weights = precision))) %>% ungroup() %>% dplyr::select(-peptide)) %>% tbl_df()
+      regressions <- setup_regression %>% group_by(peptide) %>% do(fit = lm(formula = model_formula, data = ., weights = precision))
       
     }else{
       stop("unsupported model")
     }
     
-    fit_model <- fit_model %>% group_by(peptide) %>% filter(all(is.finite(dofadj)))
+    fit_model <- regressions %>% augment(fit)
+    fit_model <- cbind(fit_model, setup_regression %>% ungroup() %>% dplyr::select_(.dots = as.list(colnames(setup_regression)[!(colnames(setup_regression) %in% colnames(fit_model))]))) %>% tbl_df()
     
-    #set.seed(1234)
-    #tmp <- fit_model %>% filter(peptide %in% sample(unique(fit_model$peptide), 10)) %>%
-    #  group_by(peptide) %>% arrange(PS) %>% mutate(PSrank = 1:n())
-    
-    #ggplot(tmp, aes(x = PS, y = residual)) + facet_wrap(~ peptide, scales = "free") + geom_point()
-    #8ggplot(tmp, aes(x = PSrank, y = abs(residual))) + facet_wrap(~ peptide, scales = "free") + geom_point()
     
     # Total variance =
     # V_ij = Vpep_i + Vps_ij
@@ -276,16 +270,15 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       
       if(var_type == "feature"){
         
-        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual^2*dofadj),
+        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual[!invariant]^2*dofadj[!invariant]),
                                                               peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
-        
         
         #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = median(residual^2*dofadj),
         #                                                      peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
         
       }else{
         
-        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual^2*dofadj - ps_var),
+        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual[!invariant]^2*dofadj - ps_var[!invariant]),
                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
       
         
