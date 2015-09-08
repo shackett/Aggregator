@@ -276,7 +276,7 @@ variance_smoother <- function(filter_values, var_type){
   # Then aggregate the total variance of a bin (sum(rse^2)) and subtract sum(peptide_var)
   # threshold to zero
   
-  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = mean((residual*dofadj)^2 - peptide_var),
+  bin_variance <- binned_obs %>% dplyr::summarize(ps_var = mean((.resid * dofadj)^2 - peptide_var),
                                                   ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                   PS = mean(PS))
   
@@ -290,7 +290,7 @@ variance_smoother <- function(filter_values, var_type){
     #                                                ps_var = ifelse(ps_var >= 0, ps_var, 0),
     #                                                PS = mean(PS))
   
-    bin_variance <- binned_obs %>% dplyr::summarize(ps_var = sum((residual*dofadj)^2)/n(),
+    bin_variance <- binned_obs %>% dplyr::summarize(ps_var = mean((.resid*dofadj)^2),
                                                     ps_var = ifelse(ps_var >= 0, ps_var, 0),
                                                     PS = mean(PS))
   
@@ -357,7 +357,7 @@ test_normality <- function(filter_values){
   require(moments)
   require(qvalue)
   
-  standard_residuals <- filter_values %>% mutate(student_resid = residual * sqrt(precision)) %>%
+  standard_residuals <- filter_values %>% mutate(student_resid = .resid * dofadj * sqrt(precision)) %>%
     dplyr::select(peptide, student_resid) %>% group_by(peptide) %>%
     mutate(std.resid = (student_resid - mean(student_resid))/sd(student_resid))
   

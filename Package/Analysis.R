@@ -228,6 +228,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
   
   continue = T
   steps = 0
+  max_steps = 4
   track_likelihood <- list()
   track_normality <- list()
   model_logLik = NULL
@@ -257,9 +258,32 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       stop("unsupported model")
     }
     
+    #model_summary <- regressions %>% glance(fit) %>%  mutate(dofadj = sqrt((df + df.residual)/df.residual))
+    
+    # add regression summaries (residuals) to design
+    
     fit_model <- regressions %>% augment(fit)
     fit_model <- cbind(fit_model, setup_regression %>% ungroup() %>% dplyr::select_(.dots = as.list(colnames(setup_regression)[!(colnames(setup_regression) %in% colnames(fit_model))]))) %>% tbl_df()
     
+    # add degree of freedom adjustment
+    
+    if(all(design_list$model_effects$class != "numeric")){
+      
+      model_summary <- fit_model %>% ungroup() %>% group_by_(.dots = list("peptide", design_list$model_effects$name)) %>%
+        dplyr::mutate(Nreps = n(),
+                      dofadj = sqrt(Nreps/(Nreps-1)))
+      
+      fit_model <- fit_model %>% left_join(model_summary %>% select_(.dots = list("peptide", "dofadj", design_list$model_effects$name)),
+                                           by = c("peptide", design_list$model_effects$name))
+      
+      
+    }else{
+      model_summary <- regressions %>% glance(fit) %>%  mutate(dofadj = sqrt((df + df.residual)/df.residual)) 
+      fit_model <- fit_model %>% left_join(model_summary %>% dplyr::select(dofadj), by = "peptide")
+    }
+    
+    # filter peptides which are underdetermined
+    fit_model <- fit_model %>% filter(!is.nan(.sigma))
     
     # Total variance =
     # V_ij = Vpep_i + Vps_ij
@@ -270,21 +294,14 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       
       if(var_type == "feature"){
         
-        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual[!invariant]^2*dofadj[!invariant]),
-                                                              peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
-        
-        #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = median(residual^2*dofadj),
-        #                                                      peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
+        fit_model <- fit_model %>% mutate(peptide_var = .sigma^2)
         
       }else{
         
-        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = mean(residual[!invariant]^2*dofadj - ps_var[!invariant]),
-                                                             peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
-      
+        fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptidePS = mean(ps_var[!is.nan(.std.resid)])) %>%
+          rowwise() %>% mutate(peptide_var = .sigma^2 - peptidePS,
+                               peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
         
-        #fit_model <- fit_model %>% group_by(peptide) %>% mutate(peptide_var = median(residual^2*dofadj - ps_var),
-        #                                                      peptide_var = ifelse(peptide_var > 0, peptide_var, 0))
-      
       }
     }
     
@@ -299,7 +316,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
       
       # fit power surrogate dependent variance either in addition to peptide variance or as the sole determinant of variability
       
-      filter_values <- fit_model %>% filter(abs(residual) > 1e-14)
+      filter_values <- fit_model %>% filter(abs(.resid) > 1e-14)
       
       fit_ps_var <- variance_smoother(filter_values, var_type)
       
@@ -308,14 +325,15 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
         mutate(total_variance = dplyr::select_(., .dots = as.list(var_components)) %>% rowSums()) %>%
         mutate(precision = 1/total_variance) %>% group_by(peptide)
       
+      # with this approach, variance can be occationally pushed to zero
+      fit_model <- fit_model %>% mutate(precision = ifelse(is.infinite(precision), max(precision[is.finite(precision)]), precision))
+    
     }
     
-    # with this approach, variance can be occationally pushed to zero
-    fit_model <- fit_model %>% mutate(precision = ifelse(is.infinite(precision), max(precision[is.finite(precision)]), precision))
     
     # Summarize model based on log-likelhood and normality of residuals
     
-    filter_values <- fit_model %>% filter(abs(residual) > 1e-14) %>%
+    filter_values <- fit_model %>% filter(abs(.resid) > 1e-14) %>%
       group_by(peptide) %>% filter(n() > 10)
     
     #grouping_terms <- c("peptide", design_list$model_effect$name[design_list$model_effect$type == "fixed" & design_list$model_effect$class != "numeric"])
@@ -326,7 +344,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
     #  N = filter_values %>% group_by_(.dots = as.list(c("peptide", one_term))) %>% dplyr::summarize(n()) %>% View()
     #}
     
-    logLik = filter_values %>% ungroup() %>% transmute(logLik = dnorm(x = residual, mean = 0, sd = sqrt(total_variance), log = T))
+    logLik = filter_values %>% ungroup() %>% transmute(logLik = dnorm(x = .resid, mean = 0, sd = sqrt(total_variance), log = T))
     #hist(logLik$logLik, breaks = 100)
     model_logLik <- c(model_logLik, sum(sort(logLik$logLik, decreasing = T)[1:ceiling(nrow(filter_values)*0.95)]))
     track_likelihood[[steps + 1]] <- logLik
@@ -337,7 +355,7 @@ fit_sample_precision <- function(input_data, design_list, var_type = "feature", 
     
     steps = steps + 1
     
-    if(steps > 0){
+    if(steps == max_steps){
       continue = F
     }
   }
